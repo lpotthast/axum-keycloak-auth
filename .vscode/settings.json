@@ -1,0 +1,10 @@
+{
+    "cSpell.words": [
+        "axum",
+        "backpressure",
+        "jsonwebtoken",
+        "keycloak",
+        "tokio",
+        "uuid"
+    ]
+}
