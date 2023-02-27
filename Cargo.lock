@@ -77,7 +77,6 @@ dependencies = [
  "futures",
  "http",
  "jsonwebtoken",
- "once_cell",
  "serde",
  "serde_json",
  "snafu",
