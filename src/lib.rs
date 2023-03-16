@@ -12,6 +12,12 @@
 //! let us define two functions to create the respective routers,
 //! adding a `KeycloakAuthLayer` only to the router whose routes should be protected.
 //!
+//! Note that specifying `required_roles` is optional. Remember that, if omitted,
+//! role-presence should/must be checked in each route-handler.
+//! The library will generally only check that any given request was performed with a valid JWT.
+//! Consider using this builder field if you have a long list of route-handlers
+//! which all require the same roles to be present.
+//!
 //! ```rust
 //! use std::sync::Arc;
 //! use axum::{http::StatusCode, response::{Response, IntoResponse}, routing::get, Extension, Router};
@@ -30,6 +36,7 @@
 //!                  .decoding_key(decoding_key)
 //!                  .passthrough_mode(PassthroughMode::Block)
 //!                  .persist_raw_claims(false)
+//!                  .required_roles(vec![String::from("administrator")])
 //!                  .build(),
 //!         )
 //! }

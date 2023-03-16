@@ -17,7 +17,7 @@ use typed_builder::TypedBuilder;
 
 use crate::{
     decode::{parse_jwt_token, KeycloakToken, StandardClaims},
-    role::Role,
+    role::{Role, ExpectRoles},
 };
 
 use super::{KeycloakAuthStatus, PassthroughMode};
@@ -39,6 +39,11 @@ pub struct KeycloakAuthLayer<R: Role> {
     /// If you do not need access to this information, fell free to set this to false.
     #[builder(default = false)]
     pub persist_raw_claims: bool,
+
+    /// These roles are always required.
+    /// Should a route protected by this layer be accessed by a user not having this role, an error is generated.
+    #[builder(default = vec![])]
+    pub required_roles: Vec<R>,
 
     #[builder(default, setter(skip))]
     pub phantom_data: PhantomData<R>,
@@ -62,6 +67,7 @@ impl<S, R: Role> Layer<S> for KeycloakAuthLayer<R> {
             mode: self.passthrough_mode,
             persist_raw_claims: self.persist_raw_claims,
             jwt_decoding_key: self.decoding_key.clone(),
+            required_roles: self.required_roles.clone(),
             phantom_data: PhantomData,
         }
     }
@@ -73,6 +79,7 @@ pub struct KeycloakAuthMiddleware<S, R: Role> {
     mode: PassthroughMode,
     persist_raw_claims: bool,
     jwt_decoding_key: Arc<DecodingKey>,
+    required_roles: Vec<R>,
     phantom_data: PhantomData<R>,
 }
 
@@ -104,6 +111,7 @@ where
                     let standard_claims = StandardClaims::parse(raw_claims)?;
                     let keycloak_token = KeycloakToken::<R>::parse(standard_claims)?;
                     keycloak_token.assert_not_expired()?;
+                    keycloak_token.expect_roles(&this.required_roles)?;
                     Ok((raw_claims_clone, keycloak_token))
                 }) {
                 Ok((raw_claims, keycloak_token)) => {
