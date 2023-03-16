@@ -17,7 +17,7 @@ use typed_builder::TypedBuilder;
 
 use crate::{
     decode::{parse_jwt_token, KeycloakToken, StandardClaims},
-    role::{Role, ExpectRoles},
+    role::{ExpectRoles, Role},
 };
 
 use super::{KeycloakAuthStatus, PassthroughMode};
@@ -141,5 +141,40 @@ where
                 },
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use jsonwebtoken::DecodingKey;
+    use std::sync::Arc;
+
+    use crate::{service::KeycloakAuthLayer, PassthroughMode};
+
+    #[test]
+    fn build_basic_layer() {
+        let _layer = KeycloakAuthLayer::<String>::builder()
+            .decoding_key(Arc::new(create_decoding_key()))
+            .passthrough_mode(PassthroughMode::Block)
+            .build();
+    }
+
+    #[test]
+    fn build_full_layer() {
+        let _layer = KeycloakAuthLayer::<String>::builder()
+            .decoding_key(Arc::new(create_decoding_key()))
+            .passthrough_mode(PassthroughMode::Block)
+            .persist_raw_claims(false)
+            .required_roles(vec![String::from("administrator")])
+            .build();
+    }
+
+    fn create_decoding_key() -> DecodingKey {
+        const PUBLIC_KEY_PEM: &str = r#"
+        -----BEGIN PUBLIC KEY-----
+        MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAv1+Qqa8AgodwBjYQzX0mvY4l9XUQzxNgg5wOutcnRZNNiMjdA8wsP33pYj7hY07xaI4ff3Oc7XMXqKkSXF0+xDEYC2hRuqknfpZzkbH5hvGn3t970zIlguqWUy/zWyy+xT/Wn1m2eWgtjGB2PO4Z1xnT3p26h1tbOoi8Yr8pecGQH2GyFsrXQI5QzXk4XVMdMWIe1xIVzEmZnnizPt0+ACv7J3Z3bMpUFb7m3qxM5uA/hg3LWbozVxj61+T2L5JQXxKzJFTfzBV1M73cLFmTwrEPzyTZNSZj6ug/9q2v+S4laRQA7InxbFAvXJU5oKIqW9qTGLpYDEV/XayhA+ESZwIDAQAB
+        -----END PUBLIC KEY-----
+        "#;
+        DecodingKey::from_rsa_pem(PUBLIC_KEY_PEM.as_bytes()).expect("valid key input")
     }
 }
