@@ -40,6 +40,9 @@ pub struct KeycloakAuthLayer<R: Role> {
     #[builder(default = false)]
     pub persist_raw_claims: bool,
 
+    /// Allowed values of the JWT 'aud' field. Token validation will fail immediately if this is left empty!
+    pub expected_audiences: Vec<String>,
+
     /// These roles are always required.
     /// Should a route protected by this layer be accessed by a user not having this role, an error is generated.
     #[builder(default = vec![])]
@@ -67,6 +70,7 @@ impl<S, R: Role> Layer<S> for KeycloakAuthLayer<R> {
             mode: self.passthrough_mode,
             persist_raw_claims: self.persist_raw_claims,
             jwt_decoding_key: self.decoding_key.clone(),
+            expected_audiences: self.expected_audiences.clone(),
             required_roles: self.required_roles.clone(),
             phantom_data: PhantomData,
         }
@@ -79,6 +83,7 @@ pub struct KeycloakAuthMiddleware<S, R: Role> {
     mode: PassthroughMode,
     persist_raw_claims: bool,
     jwt_decoding_key: Arc<DecodingKey>,
+    expected_audiences: Vec<String>,
     required_roles: Vec<R>,
     phantom_data: PhantomData<R>,
 }
@@ -102,7 +107,7 @@ where
 
         Box::pin(async move {
             match parse_jwt_token(request.headers())
-                .and_then(|token| token.decode(&this.jwt_decoding_key))
+                .and_then(|token| token.decode(&this.jwt_decoding_key, this.expected_audiences.as_slice()))
                 .and_then(|raw_claims| {
                     let raw_claims_clone = match this.persist_raw_claims {
                         true => Some(raw_claims.clone()),
@@ -156,6 +161,7 @@ mod test {
         let _layer = KeycloakAuthLayer::<String>::builder()
             .decoding_key(Arc::new(create_decoding_key()))
             .passthrough_mode(PassthroughMode::Block)
+            .expected_audiences(vec![String::from("account")])
             .build();
     }
 
@@ -165,6 +171,7 @@ mod test {
             .decoding_key(Arc::new(create_decoding_key()))
             .passthrough_mode(PassthroughMode::Block)
             .persist_raw_claims(false)
+            .expected_audiences(vec![String::from("account")])
             .required_roles(vec![String::from("administrator")])
             .build();
     }

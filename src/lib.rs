@@ -36,6 +36,7 @@
 //!                  .decoding_key(decoding_key)
 //!                  .passthrough_mode(PassthroughMode::Block)
 //!                  .persist_raw_claims(false)
+//!                  .expected_audiences(vec![String::from("account")])
 //!                  .required_roles(vec![String::from("administrator")])
 //!                  .build(),
 //!         )

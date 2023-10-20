@@ -32,14 +32,16 @@ pub(crate) fn parse_jwt_token(headers: &HeaderMap<HeaderValue>) -> Result<RawTok
 }
 
 impl<'a> RawToken<'a> {
-    pub fn decode(&self, jwt_decoding_key: &DecodingKey) -> Result<RawClaims, AuthError> {
+    pub fn decode(&self, jwt_decoding_key: &DecodingKey, expected_audiences: &[String]) -> Result<RawClaims, AuthError> {
         let jwt_header = decode_header(self.0).context(DecodeHeaderSnafu {})?;
 
         debug!(?jwt_header, "Decoded JWT header");
 
+        let mut validation = Validation::new(jwt_header.alg);
+        validation.set_audience(expected_audiences);
+
         let token_data =
-            decode::<RawClaims>(self.0, jwt_decoding_key, &Validation::new(jwt_header.alg))
-                .context(DecodeSnafu {})?;
+            decode::<RawClaims>(self.0, jwt_decoding_key, &validation).context(DecodeSnafu {})?;
 
         let raw_claims = token_data.claims;
         debug!(?raw_claims, "Decoded JWT data");
