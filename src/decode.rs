@@ -5,6 +5,7 @@ use http::HeaderValue;
 use jsonwebtoken::{decode, decode_header, DecodingKey, Validation};
 use serde::de::value::MapDeserializer;
 use serde::{Deserialize, Serialize};
+use serde_with::{serde_as, OneOrMany};
 use snafu::ResultExt;
 use tracing::debug;
 
@@ -32,7 +33,11 @@ pub(crate) fn parse_jwt_token(headers: &HeaderMap<HeaderValue>) -> Result<RawTok
 }
 
 impl<'a> RawToken<'a> {
-    pub fn decode(&self, jwt_decoding_key: &DecodingKey, expected_audiences: &[String]) -> Result<RawClaims, AuthError> {
+    pub fn decode(
+        &self,
+        jwt_decoding_key: &DecodingKey,
+        expected_audiences: &[String],
+    ) -> Result<RawClaims, AuthError> {
         let jwt_header = decode_header(self.0).context(DecodeHeaderSnafu {})?;
 
         debug!(?jwt_header, "Decoded JWT header");
@@ -52,6 +57,7 @@ impl<'a> RawToken<'a> {
 
 pub type RawClaims = HashMap<String, serde_json::Value>;
 
+#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StandardClaims {
     /// Expiration time (unix timestamp).
@@ -63,7 +69,8 @@ pub struct StandardClaims {
     /// Issuer (who created and signed this token). This is the UUID which uniquely identifies this user inside Keycloak.
     pub iss: String,
     /// Audience (who or what the token is intended for).
-    pub aud: String,
+    #[serde_as(deserialize_as = "OneOrMany<_>")]
+    pub aud: Vec<String>,
     /// Subject (whom the token refers to).
     pub sub: String,
     /// Type of token.
@@ -153,7 +160,7 @@ pub struct KeycloakToken<R: Role> {
     /// Issuer (who created and signed this token).
     pub issuer: String,
     /// Audience (who or what the token is intended for).
-    pub audience: String,
+    pub audience: Vec<String>,
     /// Subject (whom the token refers to). This is the UUID which uniquely identifies this user inside Keycloak.
     pub subject: String,
     /// Authorized party (the party to which this token was issued).
