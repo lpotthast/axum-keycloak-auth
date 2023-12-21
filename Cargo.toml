@@ -1,6 +1,6 @@
 [package]
 name = "axum-keycloak-auth"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.67.1"
 authors = ["Lukas Potthast <privat@lukas-potthast.de>"]
@@ -14,9 +14,9 @@ categories = ["authentication", "web-programming"]
 keywords = ["keycloak", "auth", "jwt", "oidc", "axum"]
 
 [dependencies]
-axum = "0.6"
+axum = "0.7"
 futures = "0.3"
-http = "0.2"
+http = "1"
 jsonwebtoken = "9"
 serde = "1"
 serde_json = "1"
