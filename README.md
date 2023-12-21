@@ -2,8 +2,6 @@
 
 Protect axum routes with a JWT emitted by Keycloak.
 
-Note: This is still in an early stage and not security-audited.
-
 ## Features
 
 - Tower layer / service that can be attached to axum routers.
@@ -17,6 +15,7 @@ Note: This is still in an early stage and not security-audited.
 
 ## Planned
 
+- OIDC-discovery as done in [leptos-keycloak-auth](https://docs.rs/leptos-keycloak-auth) with automated JWK retrieval.
 - Ability to provide a custom type into which the token is parsed, with which non-standard JWT claims can be extracted without overhead.
 - Allowing fine-grained control over how an `AuthError` is converted into a response. Giving the user control and the ability to add context, roll their own.
 
@@ -61,3 +60,10 @@ pub async fn protected(Extension(token): Extension<KeycloakToken<Role>>) -> Resp
     ).into_response()
 }
 ```
+
+## Axum compatibility
+
+| axum | axum-keycloak-auth |
+| ---- | ------------------ |
+| 0.6  | 0.2                |
+| 0.7  | 0.3                |
