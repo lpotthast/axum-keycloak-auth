@@ -8,9 +8,31 @@ use axum::{
 use serde_json::json;
 use snafu::Snafu;
 
+use crate::oidc_discovery;
+
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
 pub enum AuthError {
+    /// OIDC discovery never happened.
+    #[snafu(display("Never discovered a OIDC configuration."))]
+    NoOidcDiscovery,
+    
+    /// OIDC discovery failed.
+    #[snafu(display("Could not discover OIDC configuration."))]
+    OidcDiscovery { source: oidc_discovery::RequestError },
+
+    /// JWK set discovery never happened.
+    #[snafu(display("Never discovered a JWK set."))]
+    NoJwkSetDiscovery,
+
+    /// JWK endpoint was not a valid URL.
+    #[snafu(display("Could not parse JWK endpoint."))]
+    JwkEndpoint { source: url::ParseError },
+
+    /// JWK set discovery failed.
+    #[snafu(display("Could not discover JWK set."))]
+    JwkSetDiscovery { source: oidc_discovery::RequestError },
+
     /// The 'Authorization' header was not present on a request.
     #[snafu(display("The 'Authorization' header was not present on a request."))]
     MissingAuthorizationHeader,
@@ -35,6 +57,10 @@ pub enum AuthError {
     /// The JWT header could not be decoded.
     #[snafu(display("The JWT header could not be decoded. Source: {source}"))]
     DecodeHeader { source: jsonwebtoken::errors::Error },
+
+    /// The JWT could not be decoded.
+    #[snafu(display("The JWT could not be decoded. There were no decoding keys available."))]
+    NoDecodingKeys,
 
     /// The JWT could not be decoded.
     #[snafu(display("The JWT could not be decoded. Source: {source}"))]
@@ -66,6 +92,21 @@ pub enum AuthError {
 impl IntoResponse for AuthError {
     fn into_response(self) -> Response {
         let (status, error_message) = match self {
+            err @ AuthError::NoOidcDiscovery => {
+                (StatusCode::INTERNAL_SERVER_ERROR, Cow::Owned(err.to_string()))
+            }
+            err @ AuthError::OidcDiscovery { source: _ } => {
+                (StatusCode::INTERNAL_SERVER_ERROR, Cow::Owned(err.to_string()))
+            }
+            err @ AuthError::NoJwkSetDiscovery => {
+                (StatusCode::INTERNAL_SERVER_ERROR, Cow::Owned(err.to_string()))
+            }
+            err @ AuthError::JwkEndpoint { source: _ } => {
+                (StatusCode::INTERNAL_SERVER_ERROR, Cow::Owned(err.to_string()))
+            }
+            err @ AuthError::JwkSetDiscovery { source: _ } => {
+                (StatusCode::INTERNAL_SERVER_ERROR, Cow::Owned(err.to_string()))
+            }
             err @ AuthError::MissingAuthorizationHeader => {
                 (StatusCode::BAD_REQUEST, Cow::Owned(err.to_string()))
             }
@@ -80,6 +121,10 @@ impl IntoResponse for AuthError {
                 Cow::Owned(err.to_string()),
             ),
             err @ AuthError::DecodeHeader { source: _ } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Cow::Owned(err.to_string()),
+            ),
+            err @ AuthError::NoDecodingKeys => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Cow::Owned(err.to_string()),
             ),

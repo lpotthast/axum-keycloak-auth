@@ -162,6 +162,10 @@ use role::Role;
 
 pub mod decode;
 pub mod error;
+pub mod layer;
+pub mod middleware;
+pub mod oidc;
+pub mod oidc_discovery;
 pub mod role;
 pub mod service;
 
