@@ -15,7 +15,7 @@ use crate::{
 #[derive(Clone)]
 pub struct KeycloakAuthService<S, R: Role> {
     inner: S,
-    instance: Arc<KeycloakAuthInstance<R>>,
+    instance: Arc<KeycloakAuthInstance>,
     passthrough_mode: PassthroughMode,
     persist_raw_claims: bool,
     expected_audiences: Vec<String>,
@@ -60,7 +60,7 @@ where
         // take the service that was ready
         let mut inner = std::mem::replace(&mut self.inner, clone);
 
-        let passthrough_mode = self.passthrough_mode.clone();
+        let passthrough_mode = self.passthrough_mode;
         let expected_audiences = self.expected_audiences.clone();
         let persist_raw_claims = self.persist_raw_claims;
         let required_roles = self.required_roles.clone();

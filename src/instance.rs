@@ -1,4 +1,4 @@
-use std::{collections::HashMap, marker::PhantomData, ops::Deref, sync::Arc};
+use std::{collections::HashMap, ops::Deref, sync::Arc};
 
 use jsonwebtoken::{jwk::JwkSet, DecodingKey};
 use snafu::ResultExt;
@@ -45,8 +45,7 @@ pub struct KeycloakConfig {
     pub realm: String,
 }
 
-// TODO: Does this really need to be generic over the role type?
-pub struct KeycloakAuthInstance<R: Role> {
+pub struct KeycloakAuthInstance {
     pub(crate) id: uuid::Uuid,
     pub(crate) base: KeycloakConfig,
     pub(crate) oidc_discovery_endpoint: OidcDiscoveryEndpoint,
@@ -55,10 +54,9 @@ pub struct KeycloakAuthInstance<R: Role> {
     pub(crate) decoding_keys: Arc<RwLock<Vec<DecodingKey>>>,
     pub(crate) discovery: Arc<RwLock<Option<JoinHandle<()>>>>,
     pub(crate) last_discovery_start: Arc<RwLock<std::time::Instant>>,
-    pub(crate) phantom_data: PhantomData<R>,
 }
 
-impl<R: Role> KeycloakAuthInstance<R> {
+impl KeycloakAuthInstance {
     pub async fn new(kc_config: KeycloakConfig) -> Self {
         let oidc_discovery_endpoint = OidcDiscoveryEndpoint::from_server_and_realm(
             kc_config.server.clone(),
@@ -75,7 +73,6 @@ impl<R: Role> KeycloakAuthInstance<R> {
             decoding_keys: Arc::new(RwLock::new(Vec::new())),
             discovery: Arc::new(RwLock::new(None)),
             last_discovery_start: Arc::new(RwLock::new(first_discovery_start)),
-            phantom_data: PhantomData,
         };
         let jh = this.perform_async_oidc_discovery();
         *this.discovery.write().await = Some(jh);
@@ -97,8 +94,7 @@ impl<R: Role> KeycloakAuthInstance<R> {
         }
         let started = std::time::Instant::now();
         *self.last_discovery_start.write().await = started;
-        let jh = self.perform_async_oidc_discovery();
-        jh
+        self.perform_async_oidc_discovery()
     }
 
     #[tracing::instrument(level="info", skip_all, fields(id = ?self.id, kc_server = self.base.server.to_string(), kc_realm = self.base.realm))]
@@ -132,7 +128,7 @@ impl<R: Role> KeycloakAuthInstance<R> {
 
     pub(crate) async fn decoding_keys_iter<'a>(
         &'a self,
-        header: &jsonwebtoken::Header, // TODO: pre-filter based on header?
+        _header: &jsonwebtoken::Header, // TODO: pre-filter based on header?
     ) -> impl Iterator<Item = jsonwebtoken::DecodingKey> + 'a {
         // TODO: This block writers...
         DecodingKeyIter {
@@ -146,7 +142,7 @@ impl<R: Role> KeycloakAuthInstance<R> {
     // If fetch already happened in interval, reject immediately.
     // Only fetch is async.
     // Operation should not block.
-    pub(crate) async fn process_request(
+    pub(crate) async fn process_request<R: Role>(
         &self,
         request_headers: http::HeaderMap<http::HeaderValue>,
         expected_audiences: Vec<String>,
@@ -165,7 +161,7 @@ impl<R: Role> KeycloakAuthInstance<R> {
             // Reload decoding keys. Note that this will delay handling of the request in flight by a substantial amount of time
             // but may allow us to acknowledge it in the end without rejecting the call immediately, requiring a retry from our callers!
             // TODO: Make this an optional behavior.
-            let _ = self
+            self
                 .start_async_oidc_discovery()
                 .await // Await the start of a new discovery.
                 .await // Await the actual discovery being finished.
@@ -207,17 +203,14 @@ impl<'a> Iterator for DecodingKeyIter<'a> {
     }
 }
 
-// #[tracing::instrument(level="info", skip_all, fields(id = ?self.id, kc_server = self.base.server.to_string(), kc_realm = self.base.realm))]
+#[tracing::instrument(level="info", skip_all, fields(oidc_discovery_endpoint = ?oidc_discovery_endpoint.0.to_string()))]
 async fn perform_async_oidc_discovery(
     oidc_discovery_endpoint: OidcDiscoveryEndpoint,
     oidc_config: Arc<RwLock<Result<OidcConfig, AuthError>>>,
     jwk_set: Arc<RwLock<Result<JwkSet, AuthError>>>,
     decoding_keys: Arc<RwLock<Vec<DecodingKey>>>,
 ) {
-    tracing::info!(
-        oidc_discovery_endpoint = oidc_discovery_endpoint.0.to_string(),
-        "Performing OIDC discovery.",
-    );
+    tracing::info!("Starting OIDC discovery.");
 
     // Load OIDC config.
     let result = oidc_discovery::retrieve_oidc_config(oidc_discovery_endpoint.0)
@@ -253,7 +246,7 @@ async fn perform_async_oidc_discovery(
 
                 match &result {
                     Ok(jwk_set) => {
-                        tracing::debug!("Received jwk_set containing {} keys.", jwk_set.keys.len());
+                        tracing::info!("Received new jwk_set containing {} keys.", jwk_set.keys.len());
 
                         // Create DecodingKey instances from received JWKs.
                         *decoding_keys.write().await = parse_jwks(jwk_set);
@@ -283,7 +276,7 @@ async fn perform_async_oidc_discovery(
 }
 
 fn parse_jwks(jwk_set: &JwkSet) -> Vec<DecodingKey> {
-    jwk_set.keys.iter().map(|jwk| {
+    jwk_set.keys.iter().filter_map(|jwk| {
         match jsonwebtoken::DecodingKey::from_jwk(jwk) {
             Ok(decoding_key) => Some(decoding_key),
             Err(err) => {
@@ -291,5 +284,5 @@ fn parse_jwks(jwk_set: &JwkSet) -> Vec<DecodingKey> {
                 None
             },
         }
-    }).flatten().collect::<Vec<_>>()
+    }).collect::<Vec<_>>()
 }

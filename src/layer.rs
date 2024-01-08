@@ -11,7 +11,7 @@ use super::PassthroughMode;
 /// See the crate level documentation for how this layer can be created and used.
 #[derive(Clone, TypedBuilder)]
 pub struct KeycloakAuthLayer<R: Role> {
-    pub instance: Arc<KeycloakAuthInstance<R>>,
+    pub instance: Arc<KeycloakAuthInstance>,
 
     /// See `PassthroughMode` for more information.
     #[builder(default = PassthroughMode::Block)]
