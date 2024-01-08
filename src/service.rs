@@ -7,6 +7,7 @@ use std::{
 use jsonwebtoken::{jwk::JwkSet, DecodingKey};
 use snafu::ResultExt;
 use tokio::sync::{RwLock, RwLockReadGuard};
+use try_again::Retry;
 use url::Url;
 
 use crate::{
@@ -80,9 +81,24 @@ impl<R: Role> KeycloakAuthService<R> {
                 // Load JWK set if endpoint was parsable.
                 match jwk_set_endpoint {
                     Ok(jwk_set_endpoint) => {
-                        let result = oidc_discovery::retrieve_jwk_set(jwk_set_endpoint)
-                            .await
-                            .context(JwkSetDiscoverySnafu {});
+                        let result = try_again::retry_async(
+                            Retry {
+                                max_tries: 5,
+                                delay: Some(try_again::Delay::Static {
+                                    delay: std::time::Duration::from_secs(1),
+                                }),
+                            },
+                            try_again::TokioSleep {},
+                            move || {
+                                let url = jwk_set_endpoint.clone();
+                                async move {
+                                    oidc_discovery::retrieve_jwk_set(url.clone())
+                                        .await
+                                        .context(JwkSetDiscoverySnafu {})
+                                }
+                            },
+                        )
+                        .await;
 
                         match &result {
                             Ok(jwk_set) => {
