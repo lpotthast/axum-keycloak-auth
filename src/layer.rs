@@ -59,7 +59,7 @@ mod test {
     use url::Url;
 
     use crate::{
-        instance::{KeycloakAuthInstance, KeycloakAuthInstanceBuilder},
+        instance::{KeycloakAuthInstance, KeycloakConfig},
         layer::KeycloakAuthLayer,
         PassthroughMode,
     };
@@ -67,7 +67,7 @@ mod test {
     #[test]
     fn build_basic_layer() {
         let instance = Arc::new(KeycloakAuthInstance::new(
-            KeycloakAuthInstanceBuilder::builder()
+            KeycloakConfig::builder()
                 .server(Url::parse("https://localhost:8443/").unwrap())
                 .realm(String::from("MyRealm"))
                 .build(),
@@ -83,7 +83,7 @@ mod test {
     #[test]
     fn build_full_layer() {
         let instance = Arc::new(KeycloakAuthInstance::new(
-            KeycloakAuthInstanceBuilder::builder()
+            KeycloakConfig::builder()
                 .server(Url::parse("https://localhost:8443/").unwrap())
                 .realm(String::from("MyRealm"))
                 .build(),

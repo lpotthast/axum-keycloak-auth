@@ -3,6 +3,7 @@
         "axum",
         "backpressure",
         "jsonwebtoken",
+        "jwks",
         "keycloak",
         "oidc",
         "Oidc",

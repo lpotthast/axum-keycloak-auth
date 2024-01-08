@@ -44,7 +44,7 @@ impl<'a> RawToken<'a> {
 
     pub fn decode(
         &self,
-        header: jsonwebtoken::Header,
+        header: &jsonwebtoken::Header,
         expected_audiences: &[String],
         decoding_keys: impl Iterator<Item = DecodingKey>,
     ) -> Result<RawClaims, AuthError> {
