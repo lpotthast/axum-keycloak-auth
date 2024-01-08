@@ -94,7 +94,13 @@ impl<R: Role> KeycloakAuthService<R> {
                                 // Create DecodingKey instances from received JWKs.
                                 *decoding_keys.write().await = parse_jwks(jwk_set);
                             }
-                            Err(_) => todo!(),
+                            Err(err) => {
+                                tracing::error!(
+                                    err = snafu::Report::from_error(err).to_string(),
+                                    "Could not retrieve jwk_set."
+                                );
+                                // TODO: Handle error
+                            }
                         }
 
                         *jwk_set.write().await = result;
