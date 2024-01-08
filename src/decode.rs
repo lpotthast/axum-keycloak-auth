@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use http::HeaderMap;
 use http::HeaderValue;
@@ -19,7 +20,9 @@ use super::{error::AuthError, role::ExtractRoles, role::Role};
 
 pub(crate) struct RawToken<'a>(&'a str);
 
-pub(crate) fn extract_jwt_token(headers: &HeaderMap<HeaderValue>) -> Result<RawToken<'_>, AuthError> {
+pub(crate) fn extract_jwt_token(
+    headers: &HeaderMap<HeaderValue>,
+) -> Result<RawToken<'_>, AuthError> {
     headers
         .get(http::header::AUTHORIZATION)
         .ok_or(AuthError::MissingAuthorizationHeader)?
@@ -53,8 +56,8 @@ impl<'a> RawToken<'a> {
             AuthError,
         > = Err(AuthError::NoDecodingKeys);
         for key in decoding_keys {
-            token_data =
-                jsonwebtoken::decode::<RawClaims>(self.0, &key, &validation).context(DecodeSnafu {});
+            token_data = jsonwebtoken::decode::<RawClaims>(self.0, &key, &validation)
+                .context(DecodeSnafu {});
             if token_data.is_ok() {
                 break;
             }
@@ -110,8 +113,11 @@ pub struct StandardClaims {
 
 impl StandardClaims {
     pub fn parse(raw_claims: RawClaims) -> Result<Self, AuthError> {
-        Self::deserialize(MapDeserializer::new(raw_claims.into_iter()))
-            .map_err(|err| AuthError::JsonParse { source: err })
+        Self::deserialize(MapDeserializer::new(raw_claims.into_iter())).map_err(|err| {
+            AuthError::JsonParse {
+                source: Arc::new(err),
+            }
+        })
     }
 }
 

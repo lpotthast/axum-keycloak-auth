@@ -4,6 +4,8 @@
         "backpressure",
         "jsonwebtoken",
         "keycloak",
+        "oidc",
+        "Oidc",
         "tokio",
         "uuid"
     ]

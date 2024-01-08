@@ -1,9 +1,8 @@
-use std::{fmt::Debug, marker::PhantomData, ops::Deref};
+use std::{fmt::Debug, sync::Arc};
 use tower::Layer;
 use typed_builder::TypedBuilder;
-use url::Url;
 
-use crate::{middleware::KeycloakAuthMiddleware, role::Role};
+use crate::{instance::KeycloakAuthInstance, role::Role, service::KeycloakAuthService};
 
 use super::PassthroughMode;
 
@@ -12,9 +11,7 @@ use super::PassthroughMode;
 /// See the crate level documentation for how this layer can be created and used.
 #[derive(Clone, TypedBuilder)]
 pub struct KeycloakAuthLayer<R: Role> {
-    pub server: Url,
-
-    pub realm: String,
+    pub instance: Arc<KeycloakAuthInstance<R>>,
 
     /// See `PassthroughMode` for more information.
     #[builder(default = PassthroughMode::Block)]
@@ -33,8 +30,8 @@ pub struct KeycloakAuthLayer<R: Role> {
     #[builder(default = vec![])]
     pub required_roles: Vec<R>,
 
-    #[builder(default, setter(skip))]
-    pub phantom_data: PhantomData<R>,
+    #[builder(default = uuid::Uuid::now_v7(), setter(skip))]
+    id: uuid::Uuid,
 }
 
 impl<R: Role> Debug for KeycloakAuthLayer<R> {
@@ -47,45 +44,37 @@ impl<R: Role> Debug for KeycloakAuthLayer<R> {
 }
 
 impl<S, R: Role> Layer<S> for KeycloakAuthLayer<R> {
-    type Service = KeycloakAuthMiddleware<S, R>;
+    type Service = KeycloakAuthService<S, R>;
 
+    #[tracing::instrument(level="info", skip_all, fields(id = ?self.id))]
     fn layer(&self, inner: S) -> Self::Service {
-        KeycloakAuthMiddleware::new(inner, self)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct OidcDiscoveryEndpoint(pub(crate) Url);
-
-impl OidcDiscoveryEndpoint {
-    pub(crate) fn from_server_and_realm(server: Url, realm: &str) -> Self {
-        let mut url = server;
-        url.path_segments_mut()
-            .expect("to allow path segments on Keycloak server url")
-            .extend(&["realms", &realm, ".well-known", "openid-configuration"]);
-        Self(url)
-    }
-}
-
-impl Deref for OidcDiscoveryEndpoint {
-    type Target = Url;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
+        KeycloakAuthService::new(inner, self)
     }
 }
 
 #[cfg(test)]
 mod test {
+    use std::sync::Arc;
+
     use url::Url;
 
-    use crate::{layer::KeycloakAuthLayer, PassthroughMode};
+    use crate::{
+        instance::{KeycloakAuthInstance, KeycloakAuthInstanceBuilder},
+        layer::KeycloakAuthLayer,
+        PassthroughMode,
+    };
 
     #[test]
     fn build_basic_layer() {
+        let instance = Arc::new(KeycloakAuthInstance::new(
+            KeycloakAuthInstanceBuilder::builder()
+                .server(Url::parse("https://localhost:8443/").unwrap())
+                .realm(String::from("MyRealm"))
+                .build(),
+        ));
+
         let _layer = KeycloakAuthLayer::<String>::builder()
-            .server(Url::parse("https://localhost:8443/").unwrap())
-            .realm(String::from("MyRealm"))
+            .instance(instance)
             .passthrough_mode(PassthroughMode::Block)
             .expected_audiences(vec![String::from("account")])
             .build();
@@ -93,9 +82,15 @@ mod test {
 
     #[test]
     fn build_full_layer() {
+        let instance = Arc::new(KeycloakAuthInstance::new(
+            KeycloakAuthInstanceBuilder::builder()
+                .server(Url::parse("https://localhost:8443/").unwrap())
+                .realm(String::from("MyRealm"))
+                .build(),
+        ));
+
         let _layer = KeycloakAuthLayer::<String>::builder()
-            .server(Url::parse("https://localhost:8443/").unwrap())
-            .realm(String::from("MyRealm"))
+            .instance(instance)
             .passthrough_mode(PassthroughMode::Block)
             .persist_raw_claims(false)
             .expected_audiences(vec![String::from("account")])

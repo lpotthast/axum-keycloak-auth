@@ -1,15 +1,17 @@
+use std::sync::Arc;
+
 use crate::oidc::OidcConfig;
 use reqwest::IntoUrl;
 use serde::Deserialize;
 use snafu::{ResultExt, Snafu};
 
-#[derive(Debug, Snafu)]
+#[derive(Clone, Debug, Snafu)]
 pub enum RequestError {
     #[snafu(display("RequestError: Could not send request"))]
-    Send { source: reqwest::Error },
+    Send { source: Arc<reqwest::Error> },
 
     #[snafu(display("RequestError: Could not decode payload"))]
-    Decode { source: reqwest::Error },
+    Decode { source: Arc<reqwest::Error> },
 }
 
 pub(crate) async fn retrieve_oidc_config(
@@ -19,9 +21,11 @@ pub(crate) async fn retrieve_oidc_config(
         .get(discovery_endpoint)
         .send()
         .await
+        .map_err(Arc::new)
         .context(SendSnafu {})?
         .json::<OidcConfig>()
         .await
+        .map_err(Arc::new)
         .context(DecodeSnafu {})
 }
 
@@ -36,9 +40,11 @@ pub(crate) async fn retrieve_jwk_set(
         .get(jwk_set_endpoint)
         .send()
         .await
+        .map_err(Arc::new)
         .context(SendSnafu {})?
         .json::<RawJwkSet>()
         .await
+        .map_err(Arc::new)
         .context(DecodeSnafu {})?;
     let mut set = jsonwebtoken::jwk::JwkSet { keys: Vec::new() };
     for key in raw_set.keys {

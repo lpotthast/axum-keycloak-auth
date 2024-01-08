@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, sync::Arc};
 
 use axum::{
     http::StatusCode,
@@ -10,16 +10,18 @@ use snafu::Snafu;
 
 use crate::oidc_discovery;
 
-#[derive(Debug, Snafu)]
+#[derive(Clone, Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
 pub enum AuthError {
     /// OIDC discovery never happened.
     #[snafu(display("Never discovered a OIDC configuration."))]
     NoOidcDiscovery,
-    
+
     /// OIDC discovery failed.
     #[snafu(display("Could not discover OIDC configuration."))]
-    OidcDiscovery { source: oidc_discovery::RequestError },
+    OidcDiscovery {
+        source: oidc_discovery::RequestError,
+    },
 
     /// JWK set discovery never happened.
     #[snafu(display("Never discovered a JWK set."))]
@@ -31,7 +33,9 @@ pub enum AuthError {
 
     /// JWK set discovery failed.
     #[snafu(display("Could not discover JWK set."))]
-    JwkSetDiscovery { source: oidc_discovery::RequestError },
+    JwkSetDiscovery {
+        source: oidc_discovery::RequestError,
+    },
 
     /// The 'Authorization' header was not present on a request.
     #[snafu(display("The 'Authorization' header was not present on a request."))]
@@ -68,7 +72,7 @@ pub enum AuthError {
 
     /// Parts of the JWT could not be parsed.
     #[snafu(display("Parts of the JWT could not be parsed. Source: {source}"))]
-    JsonParse { source: serde_json::Error },
+    JsonParse { source: Arc<serde_json::Error> },
 
     /// The tokens lifetime is expired.
     #[snafu(display("The tokens lifetime is expired."))]
@@ -92,21 +96,26 @@ pub enum AuthError {
 impl IntoResponse for AuthError {
     fn into_response(self) -> Response {
         let (status, error_message) = match self {
-            err @ AuthError::NoOidcDiscovery => {
-                (StatusCode::INTERNAL_SERVER_ERROR, Cow::Owned(err.to_string()))
-            }
-            err @ AuthError::OidcDiscovery { source: _ } => {
-                (StatusCode::INTERNAL_SERVER_ERROR, Cow::Owned(err.to_string()))
-            }
-            err @ AuthError::NoJwkSetDiscovery => {
-                (StatusCode::INTERNAL_SERVER_ERROR, Cow::Owned(err.to_string()))
-            }
-            err @ AuthError::JwkEndpoint { source: _ } => {
-                (StatusCode::INTERNAL_SERVER_ERROR, Cow::Owned(err.to_string()))
-            }
-            err @ AuthError::JwkSetDiscovery { source: _ } => {
-                (StatusCode::INTERNAL_SERVER_ERROR, Cow::Owned(err.to_string()))
-            }
+            err @ AuthError::NoOidcDiscovery => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Cow::Owned(err.to_string()),
+            ),
+            err @ AuthError::OidcDiscovery { source: _ } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Cow::Owned(err.to_string()),
+            ),
+            err @ AuthError::NoJwkSetDiscovery => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Cow::Owned(err.to_string()),
+            ),
+            err @ AuthError::JwkEndpoint { source: _ } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Cow::Owned(err.to_string()),
+            ),
+            err @ AuthError::JwkSetDiscovery { source: _ } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Cow::Owned(err.to_string()),
+            ),
             err @ AuthError::MissingAuthorizationHeader => {
                 (StatusCode::BAD_REQUEST, Cow::Owned(err.to_string()))
             }

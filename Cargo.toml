@@ -30,3 +30,4 @@ tracing = "0.1"
 try-again = "0.1.1"
 typed-builder = "0.18"
 url = "2.5.0"
+uuid = { version = "1.6.1", features = ["v7"] }
