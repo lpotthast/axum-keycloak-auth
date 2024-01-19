@@ -38,7 +38,7 @@ impl<S, R: Role> KeycloakAuthService<S, R> {
 impl<S, R: Role + 'static> tower::Service<http::Request<axum::body::Body>>
     for KeycloakAuthService<S, R>
 where
-    S: tower::Service<Request<Body>, Response = axum::response::Response> + Clone + Send + 'static, // TODO: Remove sync bound
+    S: tower::Service<Request<Body>, Response = axum::response::Response> + Clone + Send + 'static,
     S::Future: Send + 'static,
 {
     type Response = S::Response;
