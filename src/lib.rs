@@ -160,6 +160,7 @@ use std::sync::Arc;
 
 use role::Role;
 
+mod action;
 pub mod decode;
 pub mod error;
 pub mod instance;

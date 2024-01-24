@@ -1,21 +1,17 @@
-use std::{collections::HashMap, ops::Deref, sync::Arc};
+use std::ops::Deref;
 
-use jsonwebtoken::{jwk::JwkSet, DecodingKey};
 use snafu::ResultExt;
-use tokio::{
-    sync::{RwLock, RwLockReadGuard},
-    task::JoinHandle,
-};
+use tokio::sync::RwLockReadGuard;
+use tracing::Instrument;
 use try_again::Retry;
 use typed_builder::TypedBuilder;
 use url::Url;
 
 use crate::{
-    decode::{extract_jwt_token, KeycloakToken, StandardClaims},
+    action::Action,
     error::{AuthError, JwkEndpointSnafu, JwkSetDiscoverySnafu, OidcDiscoverySnafu},
     oidc::OidcConfig,
     oidc_discovery,
-    role::{ExpectRoles, Role},
 };
 
 #[derive(Debug, Clone)]
@@ -45,237 +41,186 @@ pub struct KeycloakConfig {
     pub realm: String,
 }
 
+#[derive(TypedBuilder)]
+pub struct DiscoveredData {
+    #[allow(dead_code)]
+    pub(crate) oidc_config: OidcConfig,
+    #[allow(dead_code)]
+    pub(crate) jwk_set: jsonwebtoken::jwk::JwkSet,
+    pub(crate) decoding_keys: Vec<jsonwebtoken::DecodingKey>,
+}
+
+/// The KeycloakAuthInstance holds onto data required for decoding any incoming key.
+/// It is also
 pub struct KeycloakAuthInstance {
+    #[allow(dead_code)]
     pub(crate) id: uuid::Uuid,
-    pub(crate) base: KeycloakConfig,
+    #[allow(dead_code)]
+    pub(crate) config: KeycloakConfig,
     pub(crate) oidc_discovery_endpoint: OidcDiscoveryEndpoint,
-    pub(crate) oidc_config: Arc<RwLock<Result<OidcConfig, AuthError>>>,
-    pub(crate) jwk_set: Arc<RwLock<Result<JwkSet, AuthError>>>,
-    pub(crate) decoding_keys: Arc<RwLock<Vec<DecodingKey>>>,
-    pub(crate) discovery: Arc<RwLock<Option<JoinHandle<()>>>>,
-    pub(crate) last_discovery_start: Arc<RwLock<std::time::Instant>>,
+    pub(crate) discovery: Action<OidcDiscoveryEndpoint, Result<DiscoveredData, AuthError>>,
 }
 
 impl KeycloakAuthInstance {
-    pub async fn new(kc_config: KeycloakConfig) -> Self {
+    /// Creates a new KeycloakAuthInstance. This immediately starts an initial OIDC discovery process.
+    pub fn new(kc_config: KeycloakConfig) -> Self {
+        let id = uuid::Uuid::now_v7();
         let oidc_discovery_endpoint = OidcDiscoveryEndpoint::from_server_and_realm(
             kc_config.server.clone(),
             &kc_config.realm,
         );
 
-        let first_discovery_start = std::time::Instant::now();
-        let this = Self {
-            id: uuid::Uuid::now_v7(),
-            base: kc_config,
+        let kc_server = kc_config.server.to_string();
+        let kc_realm = kc_config.realm.clone();
+
+        let discovery = Action::new(move |oidc_discovery_endpoint: &OidcDiscoveryEndpoint| {
+            let kc_server = kc_server.clone();
+            let kc_realm = kc_realm.clone();
+            let oidc_discovery_endpoint = oidc_discovery_endpoint.clone();
+            async move {
+                let span = tracing::span!(
+                    tracing::Level::INFO,
+                    "perform_oidc_discovery",
+                    kc_instance_id = ?id,
+                    kc_server,
+                    kc_realm,
+                    oidc_discovery_endpoint = ?oidc_discovery_endpoint.0.to_string()
+                );
+                perform_oidc_discovery(oidc_discovery_endpoint)
+                    .instrument(span)
+                    .await
+            }
+        });
+
+        // TODO: Make this an optional behavior?
+        discovery.dispatch(oidc_discovery_endpoint.clone());
+
+        Self {
+            id,
+            config: kc_config,
             oidc_discovery_endpoint,
-            oidc_config: Arc::new(RwLock::new(Err(AuthError::NoOidcDiscovery))),
-            jwk_set: Arc::new(RwLock::new(Err(AuthError::NoJwkSetDiscovery))),
-            decoding_keys: Arc::new(RwLock::new(Vec::new())),
-            discovery: Arc::new(RwLock::new(None)),
-            last_discovery_start: Arc::new(RwLock::new(first_discovery_start)),
-        };
-        let jh = this.perform_async_oidc_discovery();
-        *this.discovery.write().await = Some(jh);
-        this
-    }
-
-    /// Starts the asynchronous OIDC discovery process or returns immediately with the current discovery state
-    /// when there still is an ongoing discovery.
-    async fn start_async_oidc_discovery(&self) -> JoinHandle<()> {
-        let current_discovery = self
-            .discovery
-            .write()
-            .await
-            .take()
-            .expect("always to have a discovery state");
-        if !current_discovery.is_finished() {
-            tracing::debug!("Skipping discovery request, as there is still a discovery in flight.");
-            return current_discovery;
+            discovery,
         }
-        let started = std::time::Instant::now();
-        *self.last_discovery_start.write().await = started;
-        self.perform_async_oidc_discovery()
     }
 
-    #[tracing::instrument(level="info", skip_all, fields(id = ?self.id, kc_server = self.base.server.to_string(), kc_realm = self.base.realm))]
-    fn perform_async_oidc_discovery(&self) -> JoinHandle<()> {
-        let oidc_discovery_endpoint = self.oidc_discovery_endpoint.clone();
-        let oidc_config = self.oidc_config.clone();
-        let jwk_set = self.jwk_set.clone();
-        let decoding_keys = self.decoding_keys.clone();
-
-        tokio::spawn(async move {
-            perform_async_oidc_discovery(
-                oidc_discovery_endpoint,
-                oidc_config,
-                jwk_set,
-                decoding_keys,
-            )
-            .await;
-        })
+    pub(crate) fn is_ready(&self) -> bool {
+        !self.discovery.is_pending()
     }
 
-    pub fn is_ready(&self) -> bool {
-        true
-        /*
-        // TODO: Cannot block the current thread from within a runtime.
+    /// Returns true after a successful OIDC discovery.
+    pub async fn is_operational(&self) -> bool {
         self.discovery
-            .blocking_read()
+            .value
+            .read()
+            .await
             .as_ref()
-            .map_or(true, |d| d.is_finished())
-        */
+            .is_some_and(|it| it.is_ok())
     }
 
-    pub(crate) async fn decoding_keys_iter<'a>(
-        &'a self,
-        _header: &jsonwebtoken::Header, // TODO: pre-filter based on header?
-    ) -> impl Iterator<Item = jsonwebtoken::DecodingKey> + 'a {
-        // TODO: This block writers...
-        DecodingKeyIter {
-            lock: self.decoding_keys.read().await,
-            index: 0,
+    pub(crate) async fn decoding_keys(&self) -> DecodingKeys<'_> {
+        DecodingKeys {
+            // Note: Tokios RwLock implementation prioritizes write access to prevent starvation. This is fine and will not block writes.
+            lock: self.discovery.value.read().await,
         }
     }
+}
 
-    // If known key works, use it.
-    // If known key does not work, fetch updated keys.
-    // If fetch already happened in interval, reject immediately.
-    // Only fetch is async.
-    // Operation should not block.
-    pub(crate) async fn process_request<R: Role>(
-        &self,
-        request_headers: http::HeaderMap<http::HeaderValue>,
-        expected_audiences: Vec<String>,
-        persist_raw_claims: bool,
-        required_roles: Vec<R>,
-    ) -> Result<(Option<HashMap<String, serde_json::Value>>, KeycloakToken<R>), AuthError> {
-        let raw_token = extract_jwt_token(&request_headers)?;
-        let header = raw_token.decode_header()?;
+pub(crate) struct DecodingKeys<'a> {
+    lock: RwLockReadGuard<'a, Option<Result<DiscoveredData, AuthError>>>,
+}
 
-        // First decode. This may fail if known decoding keys are out of date (Keycloak server changed).
-        let decoding_keys = self.decoding_keys_iter(&header).await;
-        let mut raw_claims =
-            raw_token.decode(&header, expected_audiences.as_slice(), decoding_keys);
-
-        if raw_claims.is_err() {
-            // Reload decoding keys. Note that this will delay handling of the request in flight by a substantial amount of time
-            // but may allow us to acknowledge it in the end without rejecting the call immediately, requiring a retry from our callers!
-            // TODO: Make this an optional behavior.
-            self
-                .start_async_oidc_discovery()
-                .await // Await the start of a new discovery.
-                .await // Await the actual discovery being finished.
-                .expect("No Join error"); // TODO: Error handling
-
-            // Second decode
-            let decoding_keys = self.decoding_keys_iter(&header).await;
-            raw_claims = raw_token.decode(&header, expected_audiences.as_slice(), decoding_keys);
-        }
-
-        let raw_claims = raw_claims?;
-
-        let raw_claims_clone = match persist_raw_claims {
-            true => Some(raw_claims.clone()),
-            false => None,
-        };
-        let standard_claims = StandardClaims::parse(raw_claims)?;
-        let keycloak_token = KeycloakToken::<R>::parse(standard_claims)?;
-        keycloak_token.assert_not_expired()?;
-        keycloak_token.expect_roles(&required_roles)?;
-        Ok((raw_claims_clone, keycloak_token))
+impl<'a> DecodingKeys<'a> {
+    /// Iterate over the currently known decoding keys.
+    /// This may return an empty iterator if no keys are known!
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &jsonwebtoken::DecodingKey> {
+        self.lock
+            .as_ref()
+            .map(|r| r.as_ref())
+            .and_then(|r| r.ok())
+            .map(|d| d.decoding_keys.iter())
+            .unwrap_or_default()
     }
 }
 
-struct DecodingKeyIter<'a> {
-    lock: RwLockReadGuard<'a, Vec<DecodingKey>>,
-    index: usize,
-}
-
-impl<'a> Iterator for DecodingKeyIter<'a> {
-    type Item = DecodingKey;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        // TODO: If none, all known keys did not suffice. Trigger a token refresh and continue trying with new keys. If last refresh was too recent, break immediately.
-
-        let next = self.lock.get(self.index).cloned();
-        self.index += 1;
-        next
-    }
-}
-
-#[tracing::instrument(level="info", skip_all, fields(oidc_discovery_endpoint = ?oidc_discovery_endpoint.0.to_string()))]
-async fn perform_async_oidc_discovery(
+async fn perform_oidc_discovery(
     oidc_discovery_endpoint: OidcDiscoveryEndpoint,
-    oidc_config: Arc<RwLock<Result<OidcConfig, AuthError>>>,
-    jwk_set: Arc<RwLock<Result<JwkSet, AuthError>>>,
-    decoding_keys: Arc<RwLock<Vec<DecodingKey>>>,
-) {
+) -> Result<DiscoveredData, AuthError> {
     tracing::info!("Starting OIDC discovery.");
 
+    let retry_strat = Retry {
+        max_tries: 5,
+        delay: Some(try_again::Delay::Static {
+            delay: std::time::Duration::from_secs(1),
+        }),
+    };
+
     // Load OIDC config.
-    let result = oidc_discovery::retrieve_oidc_config(oidc_discovery_endpoint.0)
-        .await
-        .context(OidcDiscoverySnafu {});
+    let oidc_config = try_again::retry_async(retry_strat, try_again::TokioSleep {}, move || {
+        let url = oidc_discovery_endpoint.0.clone();
+        async move {
+            oidc_discovery::retrieve_oidc_config(url.clone())
+                .await
+                .context(OidcDiscoverySnafu {})
+        }
+    })
+    .await
+    .map_err(|err| {
+        tracing::error!(
+            err = snafu::Report::from_error(err.clone()).to_string(),
+            "Could not retrieve OIDC config."
+        );
+        err
+    })?;
 
     // Parse JWK endpoint if OIDC config is available.
-    if let Ok(config) = &result {
-        let jwk_set_endpoint =
-            Url::parse(&config.standard_claims.jwks_uri).context(JwkEndpointSnafu {});
+    let jwk_set_endpoint = Url::parse(&oidc_config.standard_claims.jwks_uri)
+        .context(JwkEndpointSnafu {})
+        .map_err(|err| {
+            tracing::error!(
+                err = snafu::Report::from_error(err.clone()).to_string(),
+                "Could not retrieve jwk_set_endpoint_url."
+            );
+            err
+        })?;
 
-        // Load JWK set if endpoint was parsable.
-        match jwk_set_endpoint {
-            Ok(jwk_set_endpoint) => {
-                let result = try_again::retry_async(
-                    Retry {
-                        max_tries: 5,
-                        delay: Some(try_again::Delay::Static {
-                            delay: std::time::Duration::from_secs(1),
-                        }),
-                    },
-                    try_again::TokioSleep {},
-                    move || {
-                        let url = jwk_set_endpoint.clone();
-                        async move {
-                            oidc_discovery::retrieve_jwk_set(url.clone())
-                                .await
-                                .context(JwkSetDiscoverySnafu {})
-                        }
-                    },
-                )
-                .await;
-
-                match &result {
-                    Ok(jwk_set) => {
-                        tracing::info!("Received new jwk_set containing {} keys.", jwk_set.keys.len());
-
-                        // Create DecodingKey instances from received JWKs.
-                        *decoding_keys.write().await = parse_jwks(jwk_set);
-                    }
-                    Err(err) => {
-                        tracing::error!(
-                            err = snafu::Report::from_error(err).to_string(),
-                            "Could not retrieve jwk_set."
-                        );
-                        // TODO: Handle error
-                    }
-                }
-
-                *jwk_set.write().await = result;
-            }
-            Err(err) => {
-                tracing::error!(
-                    err = snafu::Report::from_error(err.clone()).to_string(),
-                    "Could not retrieve jwk_set_endpoint_url."
-                );
-                *jwk_set.write().await = Err(err);
-            }
+    // Load JWK set if endpoint was parsable.
+    let jwk_set = try_again::retry_async(retry_strat, try_again::TokioSleep {}, move || {
+        let url = jwk_set_endpoint.clone();
+        async move {
+            oidc_discovery::retrieve_jwk_set(url.clone())
+                .await
+                .context(JwkSetDiscoverySnafu {})
         }
-    }
+    })
+    .await
+    .map_err(|err| {
+        tracing::error!(
+            err = snafu::Report::from_error(err.clone()).to_string(),
+            "Could not retrieve jwk_set."
+        );
+        err
+    })?;
 
-    *oidc_config.write().await = result;
+    let num_keys = jwk_set.keys.len();
+    tracing::info!(
+        "Received new jwk_set containing {num_keys} {}.",
+        match num_keys {
+            1 => "key",
+            _ => "keys",
+        }
+    );
+
+    // Create DecodingKey instances from received JWKs.
+    let decoding_keys = parse_jwks(&jwk_set);
+
+    Ok(DiscoveredData {
+        oidc_config,
+        jwk_set,
+        decoding_keys,
+    })
 }
 
-fn parse_jwks(jwk_set: &JwkSet) -> Vec<DecodingKey> {
+fn parse_jwks(jwk_set: &jsonwebtoken::jwk::JwkSet) -> Vec<jsonwebtoken::DecodingKey> {
     jwk_set.keys.iter().filter_map(|jwk| {
         match jsonwebtoken::DecodingKey::from_jwk(jwk) {
             Ok(decoding_key) => Some(decoding_key),

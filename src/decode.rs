@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use http::HeaderMap;
 use http::HeaderValue;
-use jsonwebtoken::{DecodingKey, Validation};
 use serde::de::value::MapDeserializer;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, OneOrMany};
@@ -42,13 +41,13 @@ impl<'a> RawToken<'a> {
         Ok(jwt_header)
     }
 
-    pub fn decode(
+    pub fn decode<'d>(
         &self,
         header: &jsonwebtoken::Header,
         expected_audiences: &[String],
-        decoding_keys: impl Iterator<Item = DecodingKey>,
+        decoding_keys: impl Iterator<Item = &'d jsonwebtoken::DecodingKey>,
     ) -> Result<RawClaims, AuthError> {
-        let mut validation = Validation::new(header.alg);
+        let mut validation = jsonwebtoken::Validation::new(header.alg);
         validation.set_audience(expected_audiences);
 
         let mut token_data: Result<
@@ -56,8 +55,8 @@ impl<'a> RawToken<'a> {
             AuthError,
         > = Err(AuthError::NoDecodingKeys);
         for key in decoding_keys {
-            token_data = jsonwebtoken::decode::<RawClaims>(self.0, &key, &validation)
-                .context(DecodeSnafu {});
+            token_data =
+                jsonwebtoken::decode::<RawClaims>(self.0, key, &validation).context(DecodeSnafu {});
             if token_data.is_ok() {
                 break;
             }

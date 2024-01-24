@@ -10,7 +10,7 @@ use snafu::Snafu;
 
 use crate::oidc_discovery;
 
-#[derive(Clone, Debug, Snafu)]
+#[derive(Debug, Clone, Snafu)]
 #[snafu(visibility(pub(crate)))]
 pub enum AuthError {
     /// OIDC discovery never happened.
@@ -20,6 +20,7 @@ pub enum AuthError {
     /// OIDC discovery failed.
     #[snafu(display("Could not discover OIDC configuration."))]
     OidcDiscovery {
+        #[snafu(backtrace)]
         source: oidc_discovery::RequestError,
     },
 
@@ -28,11 +29,11 @@ pub enum AuthError {
     NoJwkSetDiscovery,
 
     /// JWK endpoint was not a valid URL.
-    #[snafu(display("Could not parse JWK endpoint."))]
+    #[snafu(display("Could not parse the JWK endpoint."))]
     JwkEndpoint { source: url::ParseError },
 
     /// JWK set discovery failed.
-    #[snafu(display("Could not discover JWK set."))]
+    #[snafu(display("Could not discover the JWK set."))]
     JwkSetDiscovery {
         source: oidc_discovery::RequestError,
     },
@@ -62,8 +63,8 @@ pub enum AuthError {
     #[snafu(display("The JWT header could not be decoded. Source: {source}"))]
     DecodeHeader { source: jsonwebtoken::errors::Error },
 
-    /// The JWT could not be decoded.
-    #[snafu(display("The JWT could not be decoded. There were no decoding keys available."))]
+    /// No decoding keys were fetched jet.
+    #[snafu(display("There were no decoding keys available."))]
     NoDecodingKeys,
 
     /// The JWT could not be decoded.

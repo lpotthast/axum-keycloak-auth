@@ -22,12 +22,14 @@ pub struct KeycloakAuthLayer<R: Role> {
     #[builder(default = false)]
     pub persist_raw_claims: bool,
 
-    /// Allowed values of the JWT 'aud' field. Token validation will fail immediately if this is left empty!
+    /// Allowed values of the JWT 'aud' (audiences) field. Token validation will fail immediately if this is left empty!
     pub expected_audiences: Vec<String>,
 
     /// These roles are always required.
     /// Should a route protected by this layer be accessed by a user not having this role, an error is generated.
-    #[builder(default = vec![])]
+    /// If fine grained role-based access management in required, 
+    /// leave this empty and perform manuakl role checks in your route handlers.
+    #[builder(default = vec![], setter(into))]
     pub required_roles: Vec<R>,
 
     #[builder(default = uuid::Uuid::now_v7(), setter(skip))]

@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     sync::Arc,
     task::{Context, Poll},
 };
@@ -8,8 +9,12 @@ use futures::future::BoxFuture;
 use http::Request;
 
 use crate::{
-    instance::KeycloakAuthInstance, layer::KeycloakAuthLayer, role::Role, KeycloakAuthStatus,
-    PassthroughMode,
+    decode::{extract_jwt_token, KeycloakToken, StandardClaims},
+    error::AuthError,
+    instance::KeycloakAuthInstance,
+    layer::KeycloakAuthLayer,
+    role::{ExpectRoles, Role},
+    KeycloakAuthStatus, PassthroughMode,
 };
 
 #[derive(Clone)]
@@ -18,8 +23,8 @@ pub struct KeycloakAuthService<S, R: Role> {
     instance: Arc<KeycloakAuthInstance>,
     passthrough_mode: PassthroughMode,
     persist_raw_claims: bool,
-    expected_audiences: Vec<String>,
-    required_roles: Vec<R>,
+    expected_audiences: Arc<Vec<String>>,
+    required_roles: Arc<Vec<R>>,
 }
 
 impl<S, R: Role> KeycloakAuthService<S, R> {
@@ -29,8 +34,8 @@ impl<S, R: Role> KeycloakAuthService<S, R> {
             instance: layer.instance.clone(),
             passthrough_mode: layer.passthrough_mode,
             persist_raw_claims: layer.persist_raw_claims,
-            expected_audiences: layer.expected_audiences.clone(), // TODO: not cheap?
-            required_roles: layer.required_roles.clone(),         // TODO: not cheap?
+            expected_audiences: Arc::new(layer.expected_audiences.clone()),
+            required_roles: Arc::new(layer.required_roles.clone()),
         }
     }
 }
@@ -57,23 +62,23 @@ where
         let clone = self.inner.clone();
         let instance = self.instance.clone();
 
-        // take the service that was ready
+        // Take the service that was ready!
         let mut inner = std::mem::replace(&mut self.inner, clone);
 
         let passthrough_mode = self.passthrough_mode;
-        let expected_audiences = self.expected_audiences.clone();
         let persist_raw_claims = self.persist_raw_claims;
+        let expected_audiences = self.expected_audiences.clone();
         let required_roles = self.required_roles.clone();
 
         Box::pin(async move {
-            match instance
-                .process_request(
-                    request.headers().clone(),
-                    expected_audiences,
-                    persist_raw_claims,
-                    required_roles,
-                )
-                .await
+            match process_request(
+                &instance,
+                request.headers().clone(),
+                expected_audiences.as_slice(),
+                persist_raw_claims,
+                required_roles.as_slice(),
+            )
+            .await
             {
                 Ok((raw_claims, keycloak_token)) => {
                     if let Some(raw_claims) = raw_claims {
@@ -103,4 +108,58 @@ where
             }
         })
     }
+}
+
+// If known key works, use it.
+// If known key does not work, fetch updated keys.
+// If fetch already happened in interval, reject immediately.
+// Only fetch is async.
+// Operation should not block.
+pub(crate) async fn process_request<R: Role>(
+    kc_instance: &KeycloakAuthInstance,
+    request_headers: http::HeaderMap<http::HeaderValue>,
+    expected_audiences: &[String],
+    persist_raw_claims: bool,
+    required_roles: &[R],
+) -> Result<(Option<HashMap<String, serde_json::Value>>, KeycloakToken<R>), AuthError> {
+    let raw_token = extract_jwt_token(&request_headers)?;
+    let header = raw_token.decode_header()?;
+
+    // First decode. This may fail if known decoding keys are out of date (Keycloak server changed).
+    let decoding_keys = kc_instance.decoding_keys().await;
+    let mut raw_claims = raw_token.decode(&header, expected_audiences, decoding_keys.iter());
+
+    if raw_claims.is_err() {
+        // TODO: Match error and only retry on specific error variants!
+        // match raw_claims.unwrap_err() {
+        //     AuthError::Decode { source } => todo!(),
+        // }
+
+        // TODO: Only retry if not throttled!
+
+        // Reload decoding keys. Note that this will delay handling of the request in flight by a substantial amount of time
+        // but may allow us to acknowledge it in the end without rejecting the call immediately, which would then require a retry from our callers!
+        // TODO: Make this an optional behavior.
+        kc_instance
+            .discovery
+            .dispatch(kc_instance.oidc_discovery_endpoint.clone())
+            .await
+            .expect("No Join error"); // TODO: Error handling
+
+        // Second decode
+        let decoding_keys = kc_instance.decoding_keys().await;
+        raw_claims = raw_token.decode(&header, expected_audiences, decoding_keys.iter());
+    }
+
+    let raw_claims = raw_claims?;
+
+    let raw_claims_clone = match persist_raw_claims {
+        true => Some(raw_claims.clone()),
+        false => None,
+    };
+    let standard_claims = StandardClaims::parse(raw_claims)?;
+    let keycloak_token = KeycloakToken::<R>::parse(standard_claims)?;
+    keycloak_token.assert_not_expired()?;
+    keycloak_token.expect_roles(required_roles)?;
+    Ok((raw_claims_clone, keycloak_token))
 }
