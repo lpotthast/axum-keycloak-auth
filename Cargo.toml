@@ -15,6 +15,7 @@ keywords = ["keycloak", "auth", "jwt", "oidc", "axum"]
 
 [dependencies]
 axum = "0.7"
+educe = { version = "0.5", default-features = false, features = ["Debug"] }
 futures = "0.3"
 http = "1"
 jsonwebtoken = "9"

@@ -1,5 +1,6 @@
 use std::ops::Deref;
 
+use educe::Educe;
 use snafu::ResultExt;
 use tokio::sync::RwLockReadGuard;
 use tracing::Instrument;
@@ -21,7 +22,7 @@ impl OidcDiscoveryEndpoint {
     pub(crate) fn from_server_and_realm(server: Url, realm: &str) -> Self {
         let mut url = server;
         url.path_segments_mut()
-            .expect("to allow path segments on Keycloak server url")
+            .expect("URL not to be a 'cannnot-be-a-base' URL. We have to append segments.")
             .extend(&["realms", &realm, ".well-known", "openid-configuration"]);
         Self(url)
     }
@@ -35,23 +36,40 @@ impl Deref for OidcDiscoveryEndpoint {
     }
 }
 
-#[derive(TypedBuilder)]
+#[derive(Debug, TypedBuilder)]
 pub struct KeycloakConfig {
+    /// Base URL of your Keycloak server. For example: `Url::parse("https://localhost:8443/").unwrap()`.
     pub server: Url,
+
+    /// The realm of you Keycloak server.
     pub realm: String,
 }
 
-#[derive(TypedBuilder)]
-pub struct DiscoveredData {
+fn debug_decoding_keys(
+    decoding_keys: &Vec<jsonwebtoken::DecodingKey>,
+    f: &mut std::fmt::Formatter<'_>,
+) -> std::fmt::Result {
+    f.write_fmt(format_args!("len: {}", decoding_keys.len()))
+}
+
+#[derive(TypedBuilder, Educe)]
+#[educe(Debug)]
+pub(crate) struct DiscoveredData {
     #[allow(dead_code)]
     pub(crate) oidc_config: OidcConfig,
     #[allow(dead_code)]
     pub(crate) jwk_set: jsonwebtoken::jwk::JwkSet,
+    #[educe(Debug(method(debug_decoding_keys)))]
     pub(crate) decoding_keys: Vec<jsonwebtoken::DecodingKey>,
 }
 
-/// The KeycloakAuthInstance holds onto data required for decoding any incoming key.
-/// It is also
+/// The KeycloakAuthInstance is responsible for performing OIDC discovery
+/// and will hold onto the retrieved OIDC configuration, including the decoding keys
+/// used to decode incoming JWTs.
+///
+/// You may want to create only a single insatnce of this struct
+/// to limit the amount of requests made towards your Keycloak server.
+#[derive(Debug)]
 pub struct KeycloakAuthInstance {
     #[allow(dead_code)]
     pub(crate) id: uuid::Uuid,
@@ -63,6 +81,8 @@ pub struct KeycloakAuthInstance {
 
 impl KeycloakAuthInstance {
     /// Creates a new KeycloakAuthInstance. This immediately starts an initial OIDC discovery process.
+    /// The `is_operational` method will tell you if discovery has taken place.
+    /// This may be useful in determining service health.
     pub fn new(kc_config: KeycloakConfig) -> Self {
         let id = uuid::Uuid::now_v7();
         let oidc_discovery_endpoint = OidcDiscoveryEndpoint::from_server_and_realm(
@@ -92,7 +112,6 @@ impl KeycloakAuthInstance {
             }
         });
 
-        // TODO: Make this an optional behavior?
         discovery.dispatch(oidc_discovery_endpoint.clone());
 
         Self {
@@ -110,8 +129,7 @@ impl KeycloakAuthInstance {
     /// Returns true after a successful OIDC discovery.
     pub async fn is_operational(&self) -> bool {
         self.discovery
-            .value
-            .read()
+            .value()
             .await
             .as_ref()
             .is_some_and(|it| it.is_ok())
@@ -120,7 +138,7 @@ impl KeycloakAuthInstance {
     pub(crate) async fn decoding_keys(&self) -> DecodingKeys<'_> {
         DecodingKeys {
             // Note: Tokios RwLock implementation prioritizes write access to prevent starvation. This is fine and will not block writes.
-            lock: self.discovery.value.read().await,
+            lock: self.discovery.value().await,
         }
     }
 }

@@ -110,11 +110,6 @@ where
     }
 }
 
-// If known key works, use it.
-// If known key does not work, fetch updated keys.
-// If fetch already happened in interval, reject immediately.
-// Only fetch is async.
-// Operation should not block.
 pub(crate) async fn process_request<R: Role>(
     kc_instance: &KeycloakAuthInstance,
     request_headers: http::HeaderMap<http::HeaderValue>,
@@ -144,7 +139,7 @@ pub(crate) async fn process_request<R: Role>(
             .discovery
             .dispatch(kc_instance.oidc_discovery_endpoint.clone())
             .await
-            .expect("No Join error"); // TODO: Error handling
+            .expect("No Join error");
 
         // Second decode
         let decoding_keys = kc_instance.decoding_keys().await;

@@ -1,37 +1,39 @@
 use std::{
+    fmt::Debug,
     pin::Pin,
     sync::{atomic::AtomicBool, Arc},
 };
 
+use educe::Educe;
 use futures::Future;
 use tokio::{sync::RwLock, task::JoinHandle};
 
-pub(crate) struct Action<I: Clone + Send + Sync + 'static, O: Send + Sync + 'static> {
+#[derive(Educe)]
+#[educe(Debug)]
+pub(crate) struct Action<I: Debug + Clone + Send + Sync + 'static, O: Debug + Send + Sync + 'static>
+{
     /// The current argument that was dispatched to the `async` function.
     /// `Some` while we are waiting for it to resolve, `None` if it has resolved.
-    pub(crate) input: Arc<RwLock<Option<I>>>,
+    input: Arc<RwLock<Option<I>>>,
 
-    /// How many dispatched actions are still pending.
-    //pending_dispatches: Rc<Cell<usize>>,
-
+    #[educe(Debug(ignore))]
     #[allow(clippy::complexity)]
     action_fn: Arc<dyn Fn(&I) -> Pin<Box<dyn Future<Output = O> + Send + Sync>> + Send + Sync>,
 
     /// Might be Some if there still is an ongoing operation.
-    //pub(crate) jh: Arc<RwLock<Option<JoinHandle<O>>>>,
-    pub(crate) pending: Arc<AtomicBool>, // pending?
+    pending: Arc<AtomicBool>,
 
     /// The most recent return value of the `async` function.
-    pub(crate) value: Arc<RwLock<Option<O>>>,
+    value: Arc<RwLock<Option<O>>>,
 
     /// Time the last value was received. None if we never received a value.
-    pub(crate) value_received: Arc<RwLock<Option<time::OffsetDateTime>>>,
+    value_received: Arc<RwLock<Option<time::OffsetDateTime>>>,
 
     /// How many times the action has successfully resolved.
-    pub(crate) version: Arc<RwLock<usize>>,
+    version: Arc<RwLock<usize>>,
 }
 
-impl<I: Clone + Send + Sync + 'static, O: Send + Sync + 'static> Action<I, O> {
+impl<I: Debug + Clone + Send + Sync + 'static, O: Debug + Send + Sync + 'static> Action<I, O> {
     pub(crate) fn new<F, Fu>(action_fn: F) -> Self
     where
         F: Fn(&I) -> Fu + Send + Sync + 'static,
@@ -54,6 +56,22 @@ impl<I: Clone + Send + Sync + 'static, O: Send + Sync + 'static> Action<I, O> {
 
     pub(crate) fn is_pending(&self) -> bool {
         self.pending.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub(crate) async fn value(&self) -> tokio::sync::RwLockReadGuard<'_, std::option::Option<O>> {
+        self.value.read().await
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn value_received(
+        &self,
+    ) -> tokio::sync::RwLockReadGuard<'_, std::option::Option<time::OffsetDateTime>> {
+        self.value_received.read().await
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn version(&self) -> usize {
+        *self.version.read().await
     }
 
     pub(crate) fn dispatch(&self, action_input: I) -> JoinHandle<()> {

@@ -11,6 +11,7 @@ use super::PassthroughMode;
 /// See the crate level documentation for how this layer can be created and used.
 #[derive(Clone, TypedBuilder)]
 pub struct KeycloakAuthLayer<R: Role> {
+    #[builder(setter(into))]
     pub instance: Arc<KeycloakAuthInstance>,
 
     /// See `PassthroughMode` for more information.
@@ -27,7 +28,7 @@ pub struct KeycloakAuthLayer<R: Role> {
 
     /// These roles are always required.
     /// Should a route protected by this layer be accessed by a user not having this role, an error is generated.
-    /// If fine grained role-based access management in required, 
+    /// If fine grained role-based access management in required,
     /// leave this empty and perform manuakl role checks in your route handlers.
     #[builder(default = vec![], setter(into))]
     pub required_roles: Vec<R>,
@@ -56,8 +57,6 @@ impl<S, R: Role> Layer<S> for KeycloakAuthLayer<R> {
 
 #[cfg(test)]
 mod test {
-    use std::sync::Arc;
-
     use url::Url;
 
     use crate::{
@@ -68,12 +67,12 @@ mod test {
 
     #[test]
     fn build_basic_layer() {
-        let instance = Arc::new(KeycloakAuthInstance::new(
+        let instance = KeycloakAuthInstance::new(
             KeycloakConfig::builder()
                 .server(Url::parse("https://localhost:8443/").unwrap())
                 .realm(String::from("MyRealm"))
                 .build(),
-        ));
+        );
 
         let _layer = KeycloakAuthLayer::<String>::builder()
             .instance(instance)
@@ -84,12 +83,12 @@ mod test {
 
     #[test]
     fn build_full_layer() {
-        let instance = Arc::new(KeycloakAuthInstance::new(
+        let instance = KeycloakAuthInstance::new(
             KeycloakConfig::builder()
                 .server(Url::parse("https://localhost:8443/").unwrap())
                 .realm(String::from("MyRealm"))
                 .build(),
-        ));
+        );
 
         let _layer = KeycloakAuthLayer::<String>::builder()
             .instance(instance)
