@@ -125,25 +125,30 @@ pub(crate) async fn process_request<R: Role>(
     let mut raw_claims = raw_token.decode(&header, expected_audiences, decoding_keys.iter());
 
     if raw_claims.is_err() {
-        // TODO: Match error and only retry on specific error variants!
-        // match raw_claims.unwrap_err() {
-        //     AuthError::Decode { source } => todo!(),
-        // }
-
-        // TODO: Only retry if not throttled!
-
-        // Reload decoding keys. Note that this will delay handling of the request in flight by a substantial amount of time
-        // but may allow us to acknowledge it in the end without rejecting the call immediately, which would then require a retry from our callers!
-        // TODO: Make this an optional behavior.
-        kc_instance
-            .discovery
-            .dispatch(kc_instance.oidc_discovery_endpoint.clone())
-            .await
-            .expect("No Join error");
+        // Reload decoding keys. This may delay handling of the request in flight by a substantial amount of time
+        // but may allow us to acknowledge it in the end without rejecting the call immediately,
+        // which would then require a retry from our caller!
+        let retry = match raw_claims.as_ref().unwrap_err() {
+            AuthError::NoDecodingKeys | AuthError::Decode { source: _ } => {
+                if kc_instance.discovery.is_pending() {
+                    kc_instance.discovery.notified().await;
+                } else {
+                    kc_instance
+                        .discovery
+                        .dispatch(kc_instance.oidc_discovery_endpoint.clone())
+                        .await
+                        .expect("No Join error");
+                }
+                true
+            }
+            _ => false,
+        };
 
         // Second decode
-        let decoding_keys = kc_instance.decoding_keys().await;
-        raw_claims = raw_token.decode(&header, expected_audiences, decoding_keys.iter());
+        if retry {
+            let decoding_keys = kc_instance.decoding_keys().await;
+            raw_claims = raw_token.decode(&header, expected_audiences, decoding_keys.iter());
+        }
     }
 
     let raw_claims = raw_claims?;

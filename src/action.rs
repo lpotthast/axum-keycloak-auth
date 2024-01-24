@@ -6,7 +6,7 @@ use std::{
 
 use educe::Educe;
 use futures::Future;
-use tokio::{sync::RwLock, task::JoinHandle};
+use tokio::{sync::Notify, sync::{futures::Notified, RwLock}, task::JoinHandle};
 
 #[derive(Educe)]
 #[educe(Debug)]
@@ -22,6 +22,8 @@ pub(crate) struct Action<I: Debug + Clone + Send + Sync + 'static, O: Debug + Se
 
     /// Might be Some if there still is an ongoing operation.
     pending: Arc<AtomicBool>,
+
+    notify: Arc<Notify>,
 
     /// The most recent return value of the `async` function.
     value: Arc<RwLock<Option<O>>>,
@@ -48,10 +50,15 @@ impl<I: Debug + Clone + Send + Sync + 'static, O: Debug + Send + Sync + 'static>
             input: Arc::new(RwLock::new(None)),
             action_fn,
             pending: Arc::new(AtomicBool::new(false)),
+            notify: Arc::new(Notify::new()),
             value: Arc::new(RwLock::new(None)),
             value_received: Arc::new(RwLock::new(None)),
             version: Arc::new(RwLock::new(0)),
         }
+    }
+
+    pub(crate) fn notified(&self) -> Notified<'_> {
+        self.notify.notified()
     }
 
     pub(crate) fn is_pending(&self) -> bool {
@@ -79,6 +86,7 @@ impl<I: Debug + Clone + Send + Sync + 'static, O: Debug + Send + Sync + 'static>
         let input = self.input.clone();
         let version = self.version.clone();
         let pending = self.pending.clone();
+        let notify = self.notify.clone();
         let value = self.value.clone();
         let value_received = self.value_received.clone();
 
@@ -92,6 +100,7 @@ impl<I: Debug + Clone + Send + Sync + 'static, O: Debug + Send + Sync + 'static>
             *version.write().await += 1;
             *input.write().await = None;
             pending.store(false, std::sync::atomic::Ordering::Release);
+            notify.notify_waiters();
         })
     }
 }
