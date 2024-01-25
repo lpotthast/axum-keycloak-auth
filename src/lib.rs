@@ -2,38 +2,39 @@
 //!
 //! Protect axum routes with a JWT emitted by Keycloak.
 //!
-//! Note: This is still in an early stage and not security-audited.
-//!
 //! ## Usage
 //!
-//! This library provides `KeycloakAuthLayer`, a tower layer / service implementation that parses and validates a JWT.
+//! This library provides the `KeycloakAuthInstance` which manages OIDC discovery and hold onto decoding keys
+//! and the `KeycloakAuthLayer`, a tower layer / service implementation that parses and validates incoming JWTs.
+//!
+//! Let's set up a protected Axum route!
 //!
 //! To demonstrate the likely case of still requiring some (e.g. /health) public routes,
-//! let us define two functions to create the respective routers,
+//! let us define two functions to create the respective puiblic and protected routers,
 //! adding a `KeycloakAuthLayer` only to the router whose routes should be protected.
 //!
-//! Note that specifying `required_roles` is optional. Remember that, if omitted,
-//! role-presence should/must be checked in each route-handler.
-//! The library will generally only check that any given request was performed with a valid JWT.
+//! Specifying the `required_roles` is optional. If omitted, role-presence can be checked in each route-handler individually.
+//! The library will then only check that a request was performed with a valid JWT.
 //! Consider using this builder field if you have a long list of route-handlers
 //! which all require the same roles to be present.
 //!
 //! ```rust
 //! use std::sync::Arc;
 //! use axum::{http::StatusCode, response::{Response, IntoResponse}, routing::get, Extension, Router};
-//! use axum_keycloak_auth::{error::AuthError, service::KeycloakAuthLayer, decode::KeycloakToken, PassthroughMode, expect_role};
+//! use axum_keycloak_auth::{Url, error::AuthError, instance::KeycloakConfig, instance::KeycloakAuthInstance, layer::KeycloakAuthLayer, decode::KeycloakToken, PassthroughMode, expect_role};
 //! use jsonwebtoken::DecodingKey;
 //!
 //! pub fn public_router() -> Router {
 //!     Router::new()
 //!         .route("/health", get(health))
 //! }
-//! pub fn protected_router(decoding_key: Arc<DecodingKey>) -> Router {
+//!
+//! pub fn protected_router(instance: KeycloakAuthInstance) -> Router {
 //!     Router::new()
 //!         .route("/protected", get(protected))
 //!         .layer(
 //!              KeycloakAuthLayer::<String>::builder()
-//!                  .decoding_key(decoding_key)
+//!                  .instance(instance)
 //!                  .passthrough_mode(PassthroughMode::Block)
 //!                  .persist_raw_claims(false)
 //!                  .expected_audiences(vec![String::from("account")])
@@ -42,16 +43,37 @@
 //!         )
 //! }
 //!
-//! // Lets also define the handlers defined in our routers.
-//! //
+//! // You may have multiple routers that you want to see protected by a `KeycloakAuthLayer`.
+//! // You can safely attach new `KeycloakAuthLayer`s to different routers, but consider using only a single `KeycloakAuthInstance` for all of these layers.
+//! // Remember: The `KeycloakAuthInstance` manages the keys used to decode incoming JWTs and dynamically fetches them from your Keycloak server.
+//! // Having multiple instances simoultaniously would incease pressure on your Keycloak instance on service startup and unnecesssarily store duplicated data.
+//! // The `KeycloakAuthLayer` therefore really takes an `Arc<KeycloakAuthInstance>` in its `instance` method!
+//! // Presence of the `Into` trait in the `instance` methods argument let us hide that fact in the previous example.
+//!
+//! #[allow(dead_code)]
+//! pub fn protect(router:Router, instance: Arc<KeycloakAuthInstance>) -> Router {
+//!     router.layer(
+//!         KeycloakAuthLayer::<String>::builder()
+//!             .instance(instance)
+//!             .passthrough_mode(PassthroughMode::Block)
+//!             .persist_raw_claims(false)
+//!             .expected_audiences(vec![String::from("account")])
+//!             .required_roles(vec![String::from("administrator")])
+//!             .build(),
+//!     )
+//! }
+//!
+//! // Lets also define the handlers ('health' and 'protected') defined in our routers.
+//!
 //! // The `health` handler can always be called without a JWT,
 //! // as we only attached an instance of the `KeycloakAuthLayer` to the protected router.
-//! //
-//! // The `KeycloakAuthLayer` makes the parsed token data available using axum's `Extension`'s.
+//!
+//! // The `KeycloakAuthLayer` makes the parsed token data available using axum's `Extension`'s,
 //! // including the users roles, the uuid of the user, its name, email, ...
 //! // The `protected` handler will (in the default `PassthroughMode::Block` case) only be called
 //! // if the request contained a valid JWT which not already expired.
-//! // The `protected` handler may then access that data to get access to the decoded keycloak user information,
+//! // It may then access that data (as `KeycloakToken<YourRoleType>`) through an Extension
+//! // to get access to the decoded keycloak user information as shown below.
 //!
 //! pub async fn health() -> impl IntoResponse {
 //!     StatusCode::OK
@@ -59,8 +81,9 @@
 //!
 //! pub async fn protected(Extension(token): Extension<KeycloakToken<String>>) -> Response {
 //!     expect_role!(&token, "administrator");
-//!
+//! 
 //!     tracing::info!("Token payload is {token:#?}");
+//! 
 //!     (
 //!         StatusCode::OK,
 //!         format!(
@@ -72,29 +95,27 @@
 //!     ).into_response()
 //! }
 //!
-//! // The `KeycloakAuthLayer` requires a `jsonwebtoken::DecodingKey` in order to be able to decode a given JWT.
-//! // Lets define a helper functions to create one. Note: The const key is there for brevity.
-//! // You should probably read this from an environment variable or construct the DecodingKey in an entirely different way.
+//! // You can construct a `KeycloakAuthInstance` using a single value of type `KeycloakConfig`, which is constructed using the builder pattern.
+//! // You may want to immediately wrap it inside an `Arc` if you intend to pass it to multiple `KeycloakAuthLayer`s. We are not doing this in this example.
 //!
-//! fn create_decoding_key() -> Result<DecodingKey, AuthError> {
-//!     const KC_REALM_PUBLIC_KEY: &str = r#"
-//!     -----BEGIN PUBLIC KEY-----
-//!     MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAv1+Qqa8AgodwBjYQzX0mvY4l9XUQzxNgg5wOutcnRZNNiMjdA8wsP33pYj7hY07xaI4ff3Oc7XMXqKkSXF0+xDEYC2hRuqknfpZzkbH5hvGn3t970zIlguqWUy/zWyy+xT/Wn1m2eWgtjGB2PO4Z1xnT3p26h1tbOoi8Yr8pecGQH2GyFsrXQI5QzXk4XVMdMWIe1xIVzEmZnnizPt0+ACv7J3Z3bMpUFb7m3qxM5uA/hg3LWbozVxj61+T2L5JQXxKzJFTfzBV1M73cLFmTwrEPzyTZNSZj6ug/9q2v+S4laRQA7InxbFAvXJU5oKIqW9qTGLpYDEV/XayhA+ESZwIDAQAB
-//!     -----END PUBLIC KEY-----
-//!     "#;
+//! // Your final router can be created by merging the public and protected routers.
 //!
-//!     DecodingKey::from_rsa_pem(KC_REALM_PUBLIC_KEY.as_bytes())
-//!         .map_err(|err| AuthError::CreateDecodingKey { source: err })
-//! }
+//! #[tokio::main]
+//! async fn main() {
+//!     let keycloak_auth_instance = KeycloakAuthInstance::new(
+//!         KeycloakConfig::builder()
+//!             .server(Url::parse("https://localhost:8443/").unwrap())
+//!             .realm(String::from("MyRealm"))
+//!             .build(),
+//!     );
+//!     let router = public_router().merge(protected_router(keycloak_auth_instance));
 //!
-//! // Your final router can be created by merging the public and protected routes.
-//!
-//! // Most likely async using #[tokio::main].
-//! fn main() {
-//!     // [...]
-//!     let decoding_key = Arc::new(create_decoding_key().expect("Public key from which a DecodingKey can be constructed"));
-//!     let router = public_router().merge(protected_router(decoding_key));
-//!     // [...]
+//!     // let addr_and_port = String::from("0.0.0.0:8080");
+//!     // let socket_addr: std::net::SocketAddr = addr_and_port.parse().unwrap();
+//!     // println!("Listening on: {}", addr_and_port);
+//! 
+//!     // let tcp_listener = tokio::net::TcpListener::bind(socket_addr).await.unwrap();
+//!     // axum::serve(tcp_listener, router.into_make_service()).await.unwrap();
 //! }
 //! ```
 //!
@@ -169,6 +190,9 @@ pub mod oidc;
 pub mod oidc_discovery;
 pub mod role;
 pub mod service;
+
+// Re-export the Url struct used when configuring a `KeycloakAuthInstance`.
+pub use url::Url;
 
 /// The mode in which the authentication middleware may operate in.
 ///

@@ -128,6 +128,7 @@ pub(crate) async fn process_request<R: Role>(
         // Reload decoding keys. This may delay handling of the request in flight by a substantial amount of time
         // but may allow us to acknowledge it in the end without rejecting the call immediately,
         // which would then require a retry from our caller!
+        #[allow(clippy::unwrap_used)]
         let retry = match raw_claims.as_ref().unwrap_err() {
             AuthError::NoDecodingKeys | AuthError::Decode { source: _ } => {
                 if kc_instance.discovery.is_pending() {

@@ -65,8 +65,8 @@ mod test {
         PassthroughMode,
     };
 
-    #[test]
-    fn build_basic_layer() {
+    #[tokio::test]
+    async fn build_basic_layer() {
         let instance = KeycloakAuthInstance::new(
             KeycloakConfig::builder()
                 .server(Url::parse("https://localhost:8443/").unwrap())
@@ -81,8 +81,8 @@ mod test {
             .build();
     }
 
-    #[test]
-    fn build_full_layer() {
+    #[tokio::test]
+    async fn build_full_layer() {
         let instance = KeycloakAuthInstance::new(
             KeycloakConfig::builder()
                 .server(Url::parse("https://localhost:8443/").unwrap())
