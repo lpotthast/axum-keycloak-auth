@@ -1,8 +1,8 @@
 [package]
 name = "axum-keycloak-auth"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
-rust-version = "1.67.1"
+rust-version = "1.74.1"
 authors = ["Lukas Potthast <privat@lukas-potthast.de>"]
 license = "MIT OR Apache-2.0"
 readme = "README.md"
@@ -15,14 +15,20 @@ keywords = ["keycloak", "auth", "jwt", "oidc", "axum"]
 
 [dependencies]
 axum = "0.7"
+educe = { version = "0.5", default-features = false, features = ["Debug"] }
 futures = "0.3"
 http = "1"
 jsonwebtoken = "9"
+reqwest = { version = "0.11", features = ["json", "serde_json"] }
 serde = "1"
 serde_json = "1"
-serde_with = "3.4.0"
-snafu = "0.7"
+serde_with = "3"
+snafu = "0.8"
 time = "0.3"
+tokio = "1"
 tower = "0.4"
 tracing = "0.1"
+try-again = "0.1"
 typed-builder = "0.18"
+url = "2"
+uuid = { version = "1", features = ["v7"] }

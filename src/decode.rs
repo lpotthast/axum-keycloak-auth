@@ -1,8 +1,8 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use http::HeaderMap;
 use http::HeaderValue;
-use jsonwebtoken::{decode, decode_header, DecodingKey, Validation};
 use serde::de::value::MapDeserializer;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, OneOrMany};
@@ -19,7 +19,9 @@ use super::{error::AuthError, role::ExtractRoles, role::Role};
 
 pub(crate) struct RawToken<'a>(&'a str);
 
-pub(crate) fn parse_jwt_token(headers: &HeaderMap<HeaderValue>) -> Result<RawToken<'_>, AuthError> {
+pub(crate) fn extract_jwt_token(
+    headers: &HeaderMap<HeaderValue>,
+) -> Result<RawToken<'_>, AuthError> {
     headers
         .get(http::header::AUTHORIZATION)
         .ok_or(AuthError::MissingAuthorizationHeader)?
@@ -33,21 +35,33 @@ pub(crate) fn parse_jwt_token(headers: &HeaderMap<HeaderValue>) -> Result<RawTok
 }
 
 impl<'a> RawToken<'a> {
-    pub fn decode(
+    pub fn decode_header(&self) -> Result<jsonwebtoken::Header, AuthError> {
+        let jwt_header = jsonwebtoken::decode_header(self.0).context(DecodeHeaderSnafu {})?;
+        tracing::debug!(?jwt_header, "Decoded JWT header");
+        Ok(jwt_header)
+    }
+
+    pub fn decode<'d>(
         &self,
-        jwt_decoding_key: &DecodingKey,
+        header: &jsonwebtoken::Header,
         expected_audiences: &[String],
+        decoding_keys: impl Iterator<Item = &'d jsonwebtoken::DecodingKey>,
     ) -> Result<RawClaims, AuthError> {
-        let jwt_header = decode_header(self.0).context(DecodeHeaderSnafu {})?;
-
-        debug!(?jwt_header, "Decoded JWT header");
-
-        let mut validation = Validation::new(jwt_header.alg);
+        let mut validation = jsonwebtoken::Validation::new(header.alg);
         validation.set_audience(expected_audiences);
 
-        let token_data =
-            decode::<RawClaims>(self.0, jwt_decoding_key, &validation).context(DecodeSnafu {})?;
-
+        let mut token_data: Result<
+            jsonwebtoken::TokenData<HashMap<String, serde_json::Value>>,
+            AuthError,
+        > = Err(AuthError::NoDecodingKeys);
+        for key in decoding_keys {
+            token_data =
+                jsonwebtoken::decode::<RawClaims>(self.0, key, &validation).context(DecodeSnafu {});
+            if token_data.is_ok() {
+                break;
+            }
+        }
+        let token_data = token_data?;
         let raw_claims = token_data.claims;
         debug!(?raw_claims, "Decoded JWT data");
 
@@ -98,8 +112,11 @@ pub struct StandardClaims {
 
 impl StandardClaims {
     pub fn parse(raw_claims: RawClaims) -> Result<Self, AuthError> {
-        Self::deserialize(MapDeserializer::new(raw_claims.into_iter()))
-            .map_err(|err| AuthError::JsonParse { source: err })
+        Self::deserialize(MapDeserializer::new(raw_claims.into_iter())).map_err(|err| {
+            AuthError::JsonParse {
+                source: Arc::new(err),
+            }
+        })
     }
 }
 
