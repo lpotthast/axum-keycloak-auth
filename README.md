@@ -5,6 +5,7 @@ Protect axum routes with a JWT emitted by Keycloak.
 ## Features
 
 - Tower layer / service that can be attached to axum routers.
+- Automatic OIDC discovery
 - Forwarding only requests providing a verifiable and non-expired JWT.
 - Ability to allow forwarding a failed authentication attempt to possibly handle the authentication using another middleware.
 - Ability to access the extracted JWT data (including roles, the KC uuid, ...) in route handler function.
@@ -15,7 +16,6 @@ Protect axum routes with a JWT emitted by Keycloak.
 
 ## Planned
 
-- OIDC-discovery as done in [leptos-keycloak-auth](https://docs.rs/leptos-keycloak-auth) with automated JWK retrieval.
 - Ability to provide a custom type into which the token is parsed, with which non-standard JWT claims can be extracted without overhead.
 - Allowing fine-grained control over how an `AuthError` is converted into a response. Giving the user control and the ability to add context, roll their own.
 
@@ -25,7 +25,7 @@ This library provides `KeycloakAuthLayer`, a tower layer/service implementation 
 
 Note that this is an extremely abbreviated example.
 
-See the **[Documentation](https://docs.rs/axum-keycloak-auth)** for detailed instructions.
+See the **[Documentation](https://docs.rs/axum-keycloak-auth)** for detailed instructions!
 
 ```rust
 enum Role {
@@ -33,14 +33,13 @@ enum Role {
     Unknown(String),
 }
 
-pub fn protected_router(decoding_key: Arc<DecodingKey>) -> Router {
+pub fn protected_router(instance: KeycloakAuthInstance) -> Router {
     Router::new()
         .route("/protected", get(protected))
         .layer(
              KeycloakAuthLayer::<Role>::builder()
-                 .decoding_key(decoding_key)
+                 .instance(instance)
                  .passthrough_mode(PassthroughMode::Block)
-                 .persist_raw_claims(false)
                  .build(),
         )
 }
@@ -66,4 +65,4 @@ pub async fn protected(Extension(token): Extension<KeycloakToken<Role>>) -> Resp
 | axum | axum-keycloak-auth |
 | ---- | ------------------ |
 | 0.6  | 0.2                |
-| 0.7  | 0.3                |
+| 0.7  | 0.3 - 0.4          |
