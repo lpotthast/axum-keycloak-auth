@@ -121,8 +121,10 @@ pub(crate) async fn process_request<R: Role>(
     let header = raw_token.decode_header()?;
 
     // First decode. This may fail if known decoding keys are out of date (Keycloak server changed).
-    let decoding_keys = kc_instance.decoding_keys().await;
-    let mut raw_claims = raw_token.decode(&header, expected_audiences, decoding_keys.iter());
+    let mut raw_claims = {
+        let decoding_keys = kc_instance.decoding_keys().await;
+        raw_token.decode(&header, expected_audiences, decoding_keys.iter())
+    };
 
     if raw_claims.is_err() {
         // Reload decoding keys. This may delay handling of the request in flight by a substantial amount of time
