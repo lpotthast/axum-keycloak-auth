@@ -23,9 +23,7 @@ Protect axum routes with a JWT emitted by Keycloak.
 
 This library provides `KeycloakAuthLayer`, a tower layer/service implementation that parses and validates a JWT.
 
-Note that this is an extremely abbreviated example.
-
-See the **[Documentation](https://docs.rs/axum-keycloak-auth)** for detailed instructions!
+See the **[Documentation](https://docs.rs/axum-keycloak-auth)** for more detailed instructions!
 
 ```rust
 enum Role {
