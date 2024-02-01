@@ -1,9 +1,7 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use http::HeaderMap;
 use http::HeaderValue;
-use serde::de::value::MapDeserializer;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, OneOrMany};
@@ -100,16 +98,6 @@ pub struct StandardClaims<Extra> {
 
     #[serde(flatten)]
     pub extra: Extra,
-}
-
-impl<Extra: DeserializeOwned> StandardClaims<Extra> {
-    pub fn parse(raw_claims: RawClaims) -> Result<Self, AuthError> {
-        Self::deserialize(MapDeserializer::new(raw_claims.into_iter())).map_err(|err| {
-            AuthError::JsonParse {
-                source: Arc::new(err),
-            }
-        })
-    }
 }
 
 /// Access details.
