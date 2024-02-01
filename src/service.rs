@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    marker::PhantomData,
     sync::Arc,
     task::{Context, Poll},
 };
@@ -7,9 +8,10 @@ use std::{
 use axum::{body::Body, response::IntoResponse};
 use futures::future::BoxFuture;
 use http::Request;
+use serde::de::DeserializeOwned;
 
 use crate::{
-    decode::{extract_jwt_token, KeycloakToken, StandardClaims},
+    decode::{extract_jwt_token, KeycloakToken},
     error::AuthError,
     instance::KeycloakAuthInstance,
     layer::KeycloakAuthLayer,
@@ -18,17 +20,26 @@ use crate::{
 };
 
 #[derive(Clone)]
-pub struct KeycloakAuthService<S, R: Role> {
+pub struct KeycloakAuthService<S, R, Extra>
+where
+    R: Role,
+    Extra: DeserializeOwned,
+{
     inner: S,
     instance: Arc<KeycloakAuthInstance>,
     passthrough_mode: PassthroughMode,
     persist_raw_claims: bool,
     expected_audiences: Arc<Vec<String>>,
     required_roles: Arc<Vec<R>>,
+    phantom: PhantomData<Extra>,
 }
 
-impl<S, R: Role> KeycloakAuthService<S, R> {
-    pub fn new(inner: S, layer: &KeycloakAuthLayer<R>) -> Self {
+impl<S, R, Extra> KeycloakAuthService<S, R, Extra>
+where
+    R: Role,
+    Extra: DeserializeOwned + Clone,
+{
+    pub fn new(inner: S, layer: &KeycloakAuthLayer<R, Extra>) -> Self {
         Self {
             inner,
             instance: layer.instance.clone(),
@@ -36,15 +47,18 @@ impl<S, R: Role> KeycloakAuthService<S, R> {
             persist_raw_claims: layer.persist_raw_claims,
             expected_audiences: Arc::new(layer.expected_audiences.clone()),
             required_roles: Arc::new(layer.required_roles.clone()),
+            phantom: PhantomData,
         }
     }
 }
 
-impl<S, R: Role + 'static> tower::Service<http::Request<axum::body::Body>>
-    for KeycloakAuthService<S, R>
+impl<S, R, Extra> tower::Service<http::Request<axum::body::Body>>
+    for KeycloakAuthService<S, R, Extra>
 where
     S: tower::Service<Request<Body>, Response = axum::response::Response> + Clone + Send + 'static,
     S::Future: Send + 'static,
+    R: Role + 'static,
+    Extra: DeserializeOwned + Clone + Sync + Send + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;
@@ -91,7 +105,7 @@ where
                         PassthroughMode::Pass => {
                             request
                                 .extensions_mut()
-                                .insert(KeycloakAuthStatus::<R>::Success(keycloak_token));
+                                .insert(KeycloakAuthStatus::<R, Extra>::Success(keycloak_token));
                         }
                     };
                     inner.call(request).await
@@ -101,7 +115,7 @@ where
                     PassthroughMode::Pass => {
                         request
                             .extensions_mut()
-                            .insert(KeycloakAuthStatus::<R>::Failure(Arc::new(err)));
+                            .insert(KeycloakAuthStatus::<R, Extra>::Failure(Arc::new(err)));
                         inner.call(request).await
                     }
                 },
@@ -110,13 +124,23 @@ where
     }
 }
 
-pub(crate) async fn process_request<R: Role>(
+pub(crate) async fn process_request<R, Extra>(
     kc_instance: &KeycloakAuthInstance,
     request_headers: http::HeaderMap<http::HeaderValue>,
     expected_audiences: &[String],
     persist_raw_claims: bool,
     required_roles: &[R],
-) -> Result<(Option<HashMap<String, serde_json::Value>>, KeycloakToken<R>), AuthError> {
+) -> Result<
+    (
+        Option<HashMap<String, serde_json::Value>>,
+        KeycloakToken<R, Extra>,
+    ),
+    AuthError,
+>
+where
+    R: Role,
+    Extra: DeserializeOwned + Clone,
+{
     let raw_token = extract_jwt_token(&request_headers)?;
     let header = raw_token.decode_header()?;
 
@@ -160,8 +184,12 @@ pub(crate) async fn process_request<R: Role>(
         true => Some(raw_claims.clone()),
         false => None,
     };
-    let standard_claims = StandardClaims::parse(raw_claims)?;
-    let keycloak_token = KeycloakToken::<R>::parse(standard_claims)?;
+    let value = serde_json::Value::from_iter(raw_claims.into_iter());
+
+    let standard_claims = serde_json::from_value(value).map_err(|err| AuthError::JsonParse {
+        source: Arc::new(err),
+    })?;
+    let keycloak_token = KeycloakToken::<R, Extra>::parse(standard_claims)?;
     keycloak_token.assert_not_expired()?;
     keycloak_token.expect_roles(required_roles)?;
     Ok((raw_claims_clone, keycloak_token))

@@ -1,8 +1,6 @@
-//! # axum-keycloak-auth
-//!
 //! Protect axum routes with a JWT emitted by Keycloak.
 //!
-//! ## Usage
+//! # Usage
 //!
 //! This library provides the `KeycloakAuthInstance` which manages OIDC discovery and hold onto decoding keys
 //! and the `KeycloakAuthLayer`, a tower layer / service implementation that parses and validates incoming JWTs.
@@ -22,7 +20,6 @@
 //! use std::sync::Arc;
 //! use axum::{http::StatusCode, response::{Response, IntoResponse}, routing::get, Extension, Router};
 //! use axum_keycloak_auth::{Url, error::AuthError, instance::KeycloakConfig, instance::KeycloakAuthInstance, layer::KeycloakAuthLayer, decode::KeycloakToken, PassthroughMode, expect_role};
-//! use jsonwebtoken::DecodingKey;
 //!
 //! pub fn public_router() -> Router {
 //!     Router::new()
@@ -81,14 +78,14 @@
 //!
 //! pub async fn protected(Extension(token): Extension<KeycloakToken<String>>) -> Response {
 //!     expect_role!(&token, "administrator");
-//! 
+//!
 //!     tracing::info!("Token payload is {token:#?}");
-//! 
+//!
 //!     (
 //!         StatusCode::OK,
 //!         format!(
 //!             "Hello {name} ({subject}). Your token is valid for another {valid_for} seconds.",
-//!             name = token.full_name,
+//!             name = token.extra.profile.preferred_username,
 //!             subject = token.subject,
 //!             valid_for = (token.expires_at - time::OffsetDateTime::now_utc()).whole_seconds()
 //!         ),
@@ -113,13 +110,13 @@
 //!     // let addr_and_port = String::from("0.0.0.0:8080");
 //!     // let socket_addr: std::net::SocketAddr = addr_and_port.parse().unwrap();
 //!     // println!("Listening on: {}", addr_and_port);
-//! 
+//!
 //!     // let tcp_listener = tokio::net::TcpListener::bind(socket_addr).await.unwrap();
 //!     // axum::serve(tcp_listener, router.into_make_service()).await.unwrap();
 //! }
 //! ```
 //!
-//! ## Using a custom role type
+//! # Using a custom role type
 //!
 //! You probably noticed a generic `<String>` when creating the `KeycloakAuthLayer` and defining the handler extension.
 //!
@@ -165,7 +162,7 @@
 //! }
 //! ```
 //!
-//! ## Passthrough modes
+//! # Passthrough modes
 //!
 //! The `KeycloakAuthLayer` provides a `passthrough_mode` field, allowing you to choose between the following modes:
 //!
@@ -194,6 +191,8 @@ pub mod service;
 // Re-export the Url struct used when configuring a `KeycloakAuthInstance`.
 pub use url::Url;
 
+use serde::de::DeserializeOwned;
+
 /// The mode in which the authentication middleware may operate in.
 ///
 /// ```PassthroughMode::Block```: Immediately return a `Response` if authentication failed.
@@ -209,8 +208,12 @@ pub enum PassthroughMode {
 
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
-pub enum KeycloakAuthStatus<R: Role> {
+pub enum KeycloakAuthStatus<R, Extra>
+where
+    R: Role,
+    Extra: DeserializeOwned + Clone,
+{
     // This variant is fairly large, but probably used most of the time. Leaving this non-boxed results in one less allocation each request.
-    Success(decode::KeycloakToken<R>),
+    Success(decode::KeycloakToken<R, Extra>),
     Failure(Arc<error::AuthError>),
 }

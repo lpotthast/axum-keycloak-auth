@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// See: https://openid.net/specs/openid-connect-discovery-1_0.html#WellKnownContents
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
