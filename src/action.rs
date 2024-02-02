@@ -6,7 +6,11 @@ use std::{
 
 use educe::Educe;
 use futures::Future;
-use tokio::{sync::Notify, sync::{futures::Notified, RwLock}, task::JoinHandle};
+use tokio::{
+    sync::Notify,
+    sync::{futures::Notified, RwLock},
+    task::JoinHandle,
+};
 
 #[derive(Educe)]
 #[educe(Debug)]

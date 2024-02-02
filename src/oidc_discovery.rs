@@ -8,14 +8,10 @@ use snafu::{ResultExt, Snafu};
 #[derive(Debug, Clone, Snafu)]
 pub enum RequestError {
     #[snafu(display("RequestError: Could not send request"))]
-    Send {
-        source: Arc<reqwest::Error>,
-    },
+    Send { source: Arc<reqwest::Error> },
 
     #[snafu(display("RequestError: Could not decode payload"))]
-    Decode {
-        source: Arc<reqwest::Error>,
-    },
+    Decode { source: Arc<reqwest::Error> },
 }
 
 pub(crate) async fn retrieve_oidc_config(

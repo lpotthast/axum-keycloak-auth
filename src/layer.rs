@@ -1,7 +1,10 @@
+use serde::de::DeserializeOwned;
+use std::marker::PhantomData;
 use std::{fmt::Debug, sync::Arc};
 use tower::Layer;
 use typed_builder::TypedBuilder;
 
+use crate::decode::ProfileAndEmail;
 use crate::{instance::KeycloakAuthInstance, role::Role, service::KeycloakAuthService};
 
 use super::PassthroughMode;
@@ -10,7 +13,11 @@ use super::PassthroughMode;
 /// Authentication happens by looking for the `Authorization` header on requests and parsing the contained JWT bearer token.
 /// See the crate level documentation for how this layer can be created and used.
 #[derive(Clone, TypedBuilder)]
-pub struct KeycloakAuthLayer<R: Role> {
+pub struct KeycloakAuthLayer<R, Extra = ProfileAndEmail>
+where
+    R: Role,
+    Extra: DeserializeOwned + Clone,
+{
     #[builder(setter(into))]
     pub instance: Arc<KeycloakAuthInstance>,
 
@@ -35,9 +42,16 @@ pub struct KeycloakAuthLayer<R: Role> {
 
     #[builder(default = uuid::Uuid::now_v7(), setter(skip))]
     id: uuid::Uuid,
+
+    #[builder(default=PhantomData, setter(skip))]
+    phantom: PhantomData<Extra>,
 }
 
-impl<R: Role> Debug for KeycloakAuthLayer<R> {
+impl<R, Extra> Debug for KeycloakAuthLayer<R, Extra>
+where
+    R: Role,
+    Extra: DeserializeOwned + Clone,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KeycloakAuthLayer")
             .field("mode", &self.passthrough_mode)
@@ -46,8 +60,12 @@ impl<R: Role> Debug for KeycloakAuthLayer<R> {
     }
 }
 
-impl<S, R: Role> Layer<S> for KeycloakAuthLayer<R> {
-    type Service = KeycloakAuthService<S, R>;
+impl<S, R, Extra> Layer<S> for KeycloakAuthLayer<R, Extra>
+where
+    R: Role,
+    Extra: DeserializeOwned + Clone,
+{
+    type Service = KeycloakAuthService<S, R, Extra>;
 
     #[tracing::instrument(level="info", skip_all, fields(id = ?self.id))]
     fn layer(&self, inner: S) -> Self::Service {

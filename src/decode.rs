@@ -1,9 +1,8 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use http::HeaderMap;
 use http::HeaderValue;
-use serde::de::value::MapDeserializer;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, OneOrMany};
 use snafu::ResultExt;
@@ -73,7 +72,7 @@ pub type RawClaims = HashMap<String, serde_json::Value>;
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StandardClaims {
+pub struct StandardClaims<Extra> {
     /// Expiration time (unix timestamp).
     pub exp: i64,
     /// Issued at time (unix timestamp).
@@ -96,28 +95,9 @@ pub struct StandardClaims {
     pub realm_access: Option<RealmAccess>,
     /// Keycloak: Optional client roles from Keycloak.
     pub resource_access: Option<ResourceAccess>,
-    /// Keycloak: First name.
-    pub given_name: String,
-    /// Keycloak: Last name.
-    pub family_name: String,
-    /// Keycloak: Combined name. Assume this to equal `format!("{given_name} {family name}")`.
-    pub name: String,
-    /// Keycloak: Username of the user.
-    pub preferred_username: String,
-    /// Keycloak: Email address of the user.
-    pub email: String,
-    /// Keycloak: Whether the users email is verified.
-    pub email_verified: bool,
-}
 
-impl StandardClaims {
-    pub fn parse(raw_claims: RawClaims) -> Result<Self, AuthError> {
-        Self::deserialize(MapDeserializer::new(raw_claims.into_iter())).map_err(|err| {
-            AuthError::JsonParse {
-                source: Arc::new(err),
-            }
-        })
-    }
+    #[serde(flatten)]
+    pub extra: Extra,
 }
 
 /// Access details.
@@ -167,7 +147,11 @@ impl<R: Role> ExtractRoles<R> for ResourceAccess {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct KeycloakToken<R: Role> {
+pub struct KeycloakToken<R, Extra = ProfileAndEmail>
+where
+    R: Role,
+    Extra: DeserializeOwned + Clone,
+{
     /// Expiration time (UTC).
     pub expires_at: time::OffsetDateTime,
     /// Issued at time (UTC).
@@ -185,22 +169,16 @@ pub struct KeycloakToken<R: Role> {
 
     // Keycloak: Roles of the user.
     pub roles: Vec<KeycloakRole<R>>,
-    /// Keycloak: First name.
-    pub given_name: String,
-    /// Keycloak: Last name.
-    pub family_name: String,
-    /// Keycloak: Combined name. Assume this to equal `format!("{given_name} {family name}")`.
-    pub full_name: String,
-    /// Keycloak: Username of the user.
-    pub preferred_username: String,
-    /// Keycloak: Email address of the user.
-    pub email: String,
-    /// Keycloak: Whether the users email is verified.
-    pub email_verified: bool,
+
+    pub extra: Extra,
 }
 
-impl<R: Role> KeycloakToken<R> {
-    pub(crate) fn parse(raw: StandardClaims) -> Result<Self, AuthError> {
+impl<R, Extra> KeycloakToken<R, Extra>
+where
+    R: Role,
+    Extra: DeserializeOwned + Clone,
+{
+    pub(crate) fn parse(raw: StandardClaims<Extra>) -> Result<Self, AuthError> {
         Ok(Self {
             expires_at: time::OffsetDateTime::from_unix_timestamp(raw.exp).map_err(|err| {
                 AuthError::InvalidToken {
@@ -226,12 +204,7 @@ impl<R: Role> KeycloakToken<R> {
                 (raw.realm_access, raw.resource_access).extract_roles(&mut roles);
                 roles
             },
-            given_name: raw.given_name,
-            family_name: raw.family_name,
-            full_name: raw.name,
-            preferred_username: raw.preferred_username,
-            email_verified: raw.email_verified,
-            email: raw.email,
+            extra: raw.extra,
         })
     }
 
@@ -247,7 +220,11 @@ impl<R: Role> KeycloakToken<R> {
     }
 }
 
-impl<R: Role> ExpectRoles<R> for KeycloakToken<R> {
+impl<R, Extra> ExpectRoles<R> for KeycloakToken<R, Extra>
+where
+    R: Role,
+    Extra: DeserializeOwned + Clone,
+{
     type Rejection = AuthError;
 
     fn expect_roles<I: Into<R> + Clone>(&self, roles: &[I]) -> Result<(), Self::Rejection> {
@@ -271,4 +248,32 @@ impl<R: Role> ExpectRoles<R> for KeycloakToken<R> {
         }
         Ok(())
     }
+}
+
+#[derive(serde::Deserialize, Debug, Clone)]
+pub struct Profile {
+    /// Keycloak: First name.
+    pub given_name: Option<String>,
+    /// Keycloak: Combined name. Assume this to equal `format!("{given_name} {family name}")`.
+    pub full_name: Option<String>,
+    /// Keycloak: Last name.
+    pub family_name: Option<String>,
+    /// Keycloak: Username of the user.
+    pub preferred_username: String,
+}
+
+#[derive(serde::Deserialize, Debug, Clone)]
+pub struct Email {
+    /// Keycloak: Email address of the user.
+    pub email: String,
+    /// Keycloak: Whether the users email is verified.
+    pub email_verified: bool,
+}
+
+#[derive(serde::Deserialize, Debug, Clone)]
+pub struct ProfileAndEmail {
+    #[serde(flatten)]
+    pub profile: Profile,
+    #[serde(flatten)]
+    pub email: Email,
 }

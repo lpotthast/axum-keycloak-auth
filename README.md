@@ -50,7 +50,7 @@ pub async fn protected(Extension(token): Extension<KeycloakToken<Role>>) -> Resp
         StatusCode::OK,
         format!(
             "Hello {name} ({subject}). Your token is valid for another {valid_for} seconds.",
-            name = token.full_name,
+            name = token.extra.profile.preferred_username,
             subject = token.subject,
             valid_for = (token.expires_at - time::OffsetDateTime::now_utc()).whole_seconds()
         ),
