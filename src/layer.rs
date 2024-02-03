@@ -89,6 +89,7 @@ mod test {
             KeycloakConfig::builder()
                 .server(Url::parse("https://localhost:8443/").unwrap())
                 .realm(String::from("MyRealm"))
+                .retry((10, 2))
                 .build(),
         );
 
@@ -105,6 +106,7 @@ mod test {
             KeycloakConfig::builder()
                 .server(Url::parse("https://localhost:8443/").unwrap())
                 .realm(String::from("MyRealm"))
+                .retry((10, 2))
                 .build(),
         );
 
