@@ -8,7 +8,7 @@
 //! Let's set up a protected Axum route!
 //!
 //! To demonstrate the likely case of still requiring some (e.g. /health) public routes,
-//! let us define two functions to create the respective puiblic and protected routers,
+//! let us define two functions to create the respective public and protected routers,
 //! adding a `KeycloakAuthLayer` only to the router whose routes should be protected.
 //!
 //! Specifying the `required_roles` is optional. If omitted, role-presence can be checked in each route-handler individually.
