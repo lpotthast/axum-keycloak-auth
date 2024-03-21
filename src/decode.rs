@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use http::HeaderMap;
 use http::HeaderValue;
@@ -10,17 +11,16 @@ use tracing::debug;
 
 use crate::error::DecodeHeaderSnafu;
 use crate::error::DecodeSnafu;
+use crate::instance::KeycloakAuthInstance;
 use crate::role::ExpectRoles;
 use crate::role::KeycloakRole;
 use crate::role::NumRoles;
 
 use super::{error::AuthError, role::ExtractRoles, role::Role};
 
-pub(crate) struct RawToken<'a>(&'a str);
+pub(crate) struct RawToken<'a>(pub(crate) &'a str);
 
-pub(crate) fn extract_jwt_token(
-    headers: &HeaderMap<HeaderValue>,
-) -> Result<RawToken<'_>, AuthError> {
+pub(crate) fn extract_jwt_token(headers: &HeaderMap<HeaderValue>) -> Result<&str, AuthError> {
     headers
         .get(http::header::AUTHORIZATION)
         .ok_or(AuthError::MissingAuthorizationHeader)?
@@ -30,9 +30,77 @@ pub(crate) fn extract_jwt_token(
         })?
         .strip_prefix("Bearer ")
         .ok_or(AuthError::MissingBearerToken)
-        .map(RawToken)
 }
 
+pub(crate) async fn validate_raw_token<R, Extra>(
+    kc_instance: &KeycloakAuthInstance,
+    raw_token: RawToken<'_>,
+    expected_audiences: &[String],
+    persist_raw_claims: bool,
+    required_roles: &[R],
+) -> Result<
+    (
+        Option<HashMap<String, serde_json::Value>>,
+        KeycloakToken<R, Extra>,
+    ),
+    AuthError,
+>
+where
+    R: Role,
+    Extra: DeserializeOwned + Clone,
+{
+    let header = raw_token.decode_header()?;
+
+    // First decode. This may fail if known decoding keys are out of date (Keycloak server changed).
+    let mut raw_claims = {
+        let decoding_keys = kc_instance.decoding_keys().await;
+        raw_token.decode(&header, expected_audiences, decoding_keys.iter())
+    };
+
+    if raw_claims.is_err() {
+        // Reload decoding keys. This may delay handling of the request in flight by a substantial amount of time
+        // but may allow us to acknowledge it in the end without rejecting the call immediately,
+        // which would then require a retry from our caller!
+        #[allow(clippy::unwrap_used)]
+        let retry = match raw_claims.as_ref().unwrap_err() {
+            AuthError::NoDecodingKeys | AuthError::Decode { source: _ } => {
+                if kc_instance.discovery.is_pending() {
+                    kc_instance.discovery.notified().await;
+                } else {
+                    kc_instance
+                        .discovery
+                        .dispatch(kc_instance.oidc_discovery_endpoint.clone())
+                        .await
+                        .expect("No Join error");
+                }
+                true
+            }
+            _ => false,
+        };
+
+        // Second decode
+        if retry {
+            let decoding_keys = kc_instance.decoding_keys().await;
+            raw_claims = raw_token.decode(&header, expected_audiences, decoding_keys.iter());
+        }
+    }
+
+    let raw_claims = raw_claims?;
+
+    let raw_claims_clone = match persist_raw_claims {
+        true => Some(raw_claims.clone()),
+        false => None,
+    };
+    let value = serde_json::Value::from_iter(raw_claims.into_iter());
+
+    let standard_claims = serde_json::from_value(value).map_err(|err| AuthError::JsonParse {
+        source: Arc::new(err),
+    })?;
+    let keycloak_token = KeycloakToken::<R, Extra>::parse(standard_claims)?;
+    keycloak_token.assert_not_expired()?;
+    keycloak_token.expect_roles(required_roles)?;
+    Ok((raw_claims_clone, keycloak_token))
+}
 impl<'a> RawToken<'a> {
     pub fn decode_header(&self) -> Result<jsonwebtoken::Header, AuthError> {
         let jwt_header = jsonwebtoken::decode_header(self.0).context(DecodeHeaderSnafu {})?;
