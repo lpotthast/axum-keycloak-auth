@@ -43,6 +43,10 @@ pub struct KeycloakConfig {
 
     /// The realm of you Keycloak server.
     pub realm: String,
+
+    /// The retry strategy to be used: (maximum tries, delay in seconds).
+    #[builder(default = (5, 1))]
+    pub retry: (usize, u64),
 }
 
 fn debug_decoding_keys(
@@ -97,6 +101,12 @@ impl KeycloakAuthInstance {
             let kc_server = kc_server.clone();
             let kc_realm = kc_realm.clone();
             let oidc_discovery_endpoint = oidc_discovery_endpoint.clone();
+            let retry_strat = Retry {
+                max_tries: kc_config.retry.0,
+                delay: Some(try_again::Delay::Static {
+                    delay: std::time::Duration::from_secs(kc_config.retry.1),
+                }),
+            };
             async move {
                 let span = tracing::span!(
                     tracing::Level::INFO,
@@ -106,7 +116,7 @@ impl KeycloakAuthInstance {
                     kc_realm,
                     oidc_discovery_endpoint = ?oidc_discovery_endpoint.0.to_string()
                 );
-                perform_oidc_discovery(oidc_discovery_endpoint)
+                perform_oidc_discovery(oidc_discovery_endpoint, retry_strat)
                     .instrument(span)
                     .await
             }
@@ -162,15 +172,9 @@ impl<'a> DecodingKeys<'a> {
 
 async fn perform_oidc_discovery(
     oidc_discovery_endpoint: OidcDiscoveryEndpoint,
+    retry_strat: Retry,
 ) -> Result<DiscoveredData, AuthError> {
     tracing::info!("Starting OIDC discovery.");
-
-    let retry_strat = Retry {
-        max_tries: 5,
-        delay: Some(try_again::Delay::Static {
-            delay: std::time::Duration::from_secs(1),
-        }),
-    };
 
     // Load OIDC config.
     let oidc_config = try_again::retry_async(retry_strat, try_again::TokioSleep {}, move || {
