@@ -1,10 +1,12 @@
 use serde::de::DeserializeOwned;
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::{fmt::Debug, sync::Arc};
 use tower::Layer;
 use typed_builder::TypedBuilder;
 
-use crate::decode::ProfileAndEmail;
+use crate::decode::{validate_raw_token, KeycloakToken, ProfileAndEmail, RawToken};
+use crate::error::AuthError;
 use crate::{instance::KeycloakAuthInstance, role::Role, service::KeycloakAuthService};
 
 use super::PassthroughMode;
@@ -45,6 +47,35 @@ where
 
     #[builder(default=PhantomData, setter(skip))]
     phantom: PhantomData<Extra>,
+}
+
+impl<R, Extra> KeycloakAuthLayer<R, Extra>
+where
+    R: Role,
+    Extra: DeserializeOwned + Clone,
+{
+    /// Allows to validate a raw keycloak token given as &str (without "Bearer " part).
+    /// This method is helpful if you wish to validate a token which does not pass the axum middleware
+    /// or if you wish to validate a token in a different context.
+    pub async fn validate_raw_token(
+        &self,
+        raw_token: &str,
+    ) -> Result<
+        (
+            Option<HashMap<String, serde_json::Value>>,
+            KeycloakToken<R, Extra>,
+        ),
+        AuthError,
+    > {
+        validate_raw_token::<R, Extra>(
+            self.instance.as_ref(),
+            RawToken(raw_token),
+            &self.expected_audiences,
+            self.persist_raw_claims,
+            &self.required_roles,
+        )
+        .await
+    }
 }
 
 impl<R, Extra> Debug for KeycloakAuthLayer<R, Extra>
