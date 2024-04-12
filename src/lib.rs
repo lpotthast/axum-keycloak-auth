@@ -206,6 +206,21 @@ pub enum PassthroughMode {
     Pass,
 }
 
+/// The mode describes where the middleware looks for the jwt access token.
+///
+/// ```TokenSource::Header```: The bearer token is in the authorization header. (Authorization: Bearer <token>)
+///
+/// ```TokenSource::Query```:  The auth token is in the query parameter of the url. (http://<url>/<path>?token=<token>)
+///
+/// ```TokenSource::Both```:   Assumes the token is in the header, but also checks the query parameter if the header is missing.
+///
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum TokenSource {
+    Header,
+    Query,
+    Both,
+}
+
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum KeycloakAuthStatus<R, Extra>
