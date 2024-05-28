@@ -118,13 +118,13 @@ impl IntoResponse for AuthError {
                 Cow::Owned(err.to_string()),
             ),
             err @ AuthError::MissingAuthorizationHeader => {
-                (StatusCode::BAD_REQUEST, Cow::Owned(err.to_string()))
+                (StatusCode::UNAUTHORIZED, Cow::Owned(err.to_string()))
             }
             err @ AuthError::InvalidAuthorizationHeader { reason: _ } => {
-                (StatusCode::BAD_REQUEST, Cow::Owned(err.to_string()))
+                (StatusCode::UNAUTHORIZED, Cow::Owned(err.to_string()))
             }
             err @ AuthError::MissingBearerToken => {
-                (StatusCode::BAD_REQUEST, Cow::Owned(err.to_string()))
+                (StatusCode::UNAUTHORIZED, Cow::Owned(err.to_string()))
             }
             err @ AuthError::CreateDecodingKey { source: _ } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -134,14 +134,12 @@ impl IntoResponse for AuthError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Cow::Owned(err.to_string()),
             ),
-            err @ AuthError::NoDecodingKeys => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Cow::Owned(err.to_string()),
-            ),
-            err @ AuthError::Decode { source: _ } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Cow::Owned(err.to_string()),
-            ),
+            err @ AuthError::NoDecodingKeys => {
+                (StatusCode::UNAUTHORIZED, Cow::Owned(err.to_string()))
+            }
+            err @ AuthError::Decode { source: _ } => {
+                (StatusCode::UNAUTHORIZED, Cow::Owned(err.to_string()))
+            }
             err @ AuthError::JsonParse { source: _ } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Cow::Owned(err.to_string()),
@@ -150,18 +148,16 @@ impl IntoResponse for AuthError {
                 (StatusCode::UNAUTHORIZED, Cow::Owned(err.to_string()))
             }
             err @ AuthError::InvalidToken { reason: _ } => {
-                (StatusCode::BAD_REQUEST, Cow::Owned(err.to_string()))
+                (StatusCode::UNAUTHORIZED, Cow::Owned(err.to_string()))
             }
             AuthError::MissingExpectedRole { role } => (
-                StatusCode::UNAUTHORIZED,
+                StatusCode::FORBIDDEN,
                 match cfg!(debug_assertions) {
                     true => Cow::Owned(format!("Missing expected role: {role}")),
                     false => Cow::Borrowed("Missing expected role"),
                 },
             ),
-            err @ AuthError::UnexpectedRole => {
-                (StatusCode::UNAUTHORIZED, Cow::Owned(err.to_string()))
-            }
+            err @ AuthError::UnexpectedRole => (StatusCode::FORBIDDEN, Cow::Owned(err.to_string())),
         };
         let body = Json(json!({
             "error": error_message,
