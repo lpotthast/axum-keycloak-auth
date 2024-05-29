@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use http::HeaderMap;
-use http::HeaderValue;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, OneOrMany};
@@ -15,128 +13,21 @@ use crate::instance::KeycloakAuthInstance;
 use crate::role::ExpectRoles;
 use crate::role::KeycloakRole;
 use crate::role::NumRoles;
-use crate::TokenSource;
 
 use super::{error::AuthError, role::ExtractRoles, role::Role};
 
+pub type RawClaims = HashMap<String, serde_json::Value>;
+
 pub(crate) struct RawToken<'a>(pub(crate) &'a str);
 
-pub(crate) fn extract_jwt_token(
-    token_source: TokenSource,
-    headers: &HeaderMap<HeaderValue>,
-    uri_query: HashMap<String, String>,
-) -> Result<String, AuthError> {
-    let auth_header = headers.get(http::header::AUTHORIZATION);
-    let query_param_token = extract_token_from_query(&uri_query);
-
-    match token_source {
-        TokenSource::Header => extract_token_from_header(auth_header),
-        TokenSource::Query => query_param_token.ok_or(AuthError::MissingAuthorizationQuery),
-        TokenSource::Both => match auth_header {
-            None => query_param_token.ok_or(AuthError::MissingAuthorizationQuery),
-            some_opt => extract_token_from_header(some_opt),
-        },
-    }
-}
-
-fn extract_token_from_header(header: Option<&HeaderValue>) -> Result<String, AuthError> {
-    header
-        .ok_or(AuthError::MissingAuthorizationHeader)?
-        .to_str()
-        .map_err(|err| AuthError::InvalidAuthorizationHeader {
-            reason: err.to_string(),
-        })?
-        .strip_prefix("Bearer ")
-        .ok_or(AuthError::MissingBearerToken)
-        .map(|str_ref| str_ref.to_string())
-}
-
-fn extract_token_from_query(uri_query: &HashMap<String, String>) -> Option<String> {
-    if uri_query.contains_key("token") {
-        let token = uri_query.get("token").unwrap().clone();
-        Some(token)
-    } else {
-        None
-    }
-}
-
-pub(crate) async fn validate_raw_token<R, Extra>(
-    kc_instance: &KeycloakAuthInstance,
-    raw_token: RawToken<'_>,
-    expected_audiences: &[String],
-    persist_raw_claims: bool,
-    required_roles: &[R],
-) -> Result<
-    (
-        Option<HashMap<String, serde_json::Value>>,
-        KeycloakToken<R, Extra>,
-    ),
-    AuthError,
->
-where
-    R: Role,
-    Extra: DeserializeOwned + Clone,
-{
-    let header = raw_token.decode_header()?;
-
-    // First decode. This may fail if known decoding keys are out of date (Keycloak server changed).
-    let mut raw_claims = {
-        let decoding_keys = kc_instance.decoding_keys().await;
-        raw_token.decode(&header, expected_audiences, decoding_keys.iter())
-    };
-
-    if raw_claims.is_err() {
-        // Reload decoding keys. This may delay handling of the request in flight by a substantial amount of time
-        // but may allow us to acknowledge it in the end without rejecting the call immediately,
-        // which would then require a retry from our caller!
-        #[allow(clippy::unwrap_used)]
-        let retry = match raw_claims.as_ref().unwrap_err() {
-            AuthError::NoDecodingKeys | AuthError::Decode { source: _ } => {
-                if kc_instance.discovery.is_pending() {
-                    kc_instance.discovery.notified().await;
-                } else {
-                    kc_instance
-                        .discovery
-                        .dispatch(kc_instance.oidc_discovery_endpoint.clone())
-                        .await
-                        .expect("No Join error");
-                }
-                true
-            }
-            _ => false,
-        };
-
-        // Second decode
-        if retry {
-            let decoding_keys = kc_instance.decoding_keys().await;
-            raw_claims = raw_token.decode(&header, expected_audiences, decoding_keys.iter());
-        }
-    }
-
-    let raw_claims = raw_claims?;
-
-    let raw_claims_clone = match persist_raw_claims {
-        true => Some(raw_claims.clone()),
-        false => None,
-    };
-    let value = serde_json::Value::from_iter(raw_claims.into_iter());
-
-    let standard_claims = serde_json::from_value(value).map_err(|err| AuthError::JsonParse {
-        source: Arc::new(err),
-    })?;
-    let keycloak_token = KeycloakToken::<R, Extra>::parse(standard_claims)?;
-    keycloak_token.assert_not_expired()?;
-    keycloak_token.expect_roles(required_roles)?;
-    Ok((raw_claims_clone, keycloak_token))
-}
 impl<'a> RawToken<'a> {
-    pub fn decode_header(&self) -> Result<jsonwebtoken::Header, AuthError> {
+    pub(crate) fn decode_header(&self) -> Result<jsonwebtoken::Header, AuthError> {
         let jwt_header = jsonwebtoken::decode_header(self.0).context(DecodeHeaderSnafu {})?;
         tracing::debug!(?jwt_header, "Decoded JWT header");
         Ok(jwt_header)
     }
 
-    pub fn decode<'d>(
+    pub(crate) fn decode_and_validate<'d>(
         &self,
         header: &jsonwebtoken::Header,
         expected_audiences: &[String],
@@ -164,7 +55,71 @@ impl<'a> RawToken<'a> {
     }
 }
 
-pub type RawClaims = HashMap<String, serde_json::Value>;
+pub(crate) async fn decode_and_validate(
+    kc_instance: &KeycloakAuthInstance,
+    raw_token: RawToken<'_>,
+    expected_audiences: &[String],
+) -> Result<RawClaims, AuthError> {
+    let header = raw_token.decode_header()?;
+
+    // First decode. This may fail if known decoding keys are out of date (for example if the Keycloak server changed).
+    let mut raw_claims = {
+        let decoding_keys = kc_instance.decoding_keys().await;
+        raw_token.decode_and_validate(&header, expected_audiences, decoding_keys.iter())
+    };
+
+    if raw_claims.is_err() {
+        // Reload decoding keys. This may delay handling of the request in flight by a substantial amount of time
+        // but may allow us to acknowledge it in the end without rejecting the call immediately,
+        // which would then require a retry from our caller!
+        #[allow(clippy::unwrap_used)]
+        let retry = match raw_claims.as_ref().unwrap_err() {
+            AuthError::NoDecodingKeys | AuthError::Decode { source: _ } => {
+                kc_instance.perform_oidc_discovery().await;
+                true
+            }
+            _ => false,
+        };
+
+        // Second decode
+        if retry {
+            let decoding_keys = kc_instance.decoding_keys().await;
+            raw_claims = raw_token.decode_and_validate(&header, expected_audiences, decoding_keys.iter());
+        }
+    }
+
+    raw_claims
+}
+
+pub(crate) async fn parse_raw_claims<R, Extra>(
+    raw_claims: RawClaims,
+    persist_raw_claims: bool,
+    required_roles: &[R],
+) -> Result<
+    (
+        Option<HashMap<String, serde_json::Value>>,
+        KeycloakToken<R, Extra>,
+    ),
+    AuthError,
+>
+where
+    R: Role,
+    Extra: DeserializeOwned + Clone,
+{
+    let raw_claims_clone = match persist_raw_claims {
+        true => Some(raw_claims.clone()),
+        false => None,
+    };
+    let value = serde_json::Value::from_iter(raw_claims.into_iter());
+
+    let standard_claims = serde_json::from_value(value).map_err(|err| AuthError::JsonParse {
+        source: Arc::new(err),
+    })?;
+    let keycloak_token = KeycloakToken::<R, Extra>::parse(standard_claims)?;
+    keycloak_token.assert_not_expired()?;
+    keycloak_token.expect_roles(required_roles)?;
+    Ok((raw_claims_clone, keycloak_token))
+}
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]

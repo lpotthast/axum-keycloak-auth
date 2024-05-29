@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     sync::Arc,
     task::{Context, Poll},
 };
@@ -8,15 +7,8 @@ use axum::{body::Body, response::IntoResponse};
 use futures::future::BoxFuture;
 use http::Request;
 use serde::de::DeserializeOwned;
-use serde_querystring::DuplicateQS;
 
-use crate::{
-    decode::{extract_jwt_token, KeycloakToken},
-    error::AuthError,
-    layer::KeycloakAuthLayer,
-    role::Role,
-    KeycloakAuthStatus, PassthroughMode,
-};
+use crate::{extract, layer::KeycloakAuthLayer, role::Role, KeycloakAuthStatus, PassthroughMode};
 
 #[derive(Clone)]
 pub struct KeycloakAuthService<S, R, Extra>
@@ -71,13 +63,17 @@ where
         let passthrough_mode = cloned_layer.passthrough_mode;
 
         Box::pin(async move {
-            let query_param: HashMap<String, String> = match request.uri().query() {
-                Some(query) => DuplicateQS::parse(query.as_bytes())
-                    .deserialize()
-                    .unwrap_or_else(|_| HashMap::new()),
-                None => HashMap::new(),
+            // Process the request.
+            let result = {
+                let extracted_token =
+                    extract::extract_jwt(&request, &cloned_layer.token_extractors);
+                match extracted_token {
+                    Ok(extracted_token) => cloned_layer.validate_raw_token(&extracted_token).await,
+                    Err(err) => Err(err),
+                }
             };
-            match process_request(&cloned_layer, request.headers().clone(), query_param).await {
+
+            match result {
                 Ok((raw_claims, keycloak_token)) => {
                     if let Some(raw_claims) = raw_claims {
                         request.extensions_mut().insert(raw_claims);
@@ -106,23 +102,4 @@ where
             }
         })
     }
-}
-
-async fn process_request<R, Extra>(
-    kc_layer: &KeycloakAuthLayer<R, Extra>,
-    request_headers: http::HeaderMap<http::HeaderValue>,
-    uri_query: HashMap<String, String>,
-) -> Result<
-    (
-        Option<HashMap<String, serde_json::Value>>,
-        KeycloakToken<R, Extra>,
-    ),
-    AuthError,
->
-where
-    R: Role,
-    Extra: DeserializeOwned + Clone,
-{
-    let raw_token_str = extract_jwt_token(kc_layer.token_source, &request_headers, uri_query)?;
-    kc_layer.validate_raw_token(&raw_token_str).await
 }

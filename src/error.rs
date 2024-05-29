@@ -42,10 +42,6 @@ pub enum AuthError {
     #[snafu(display("The 'Authorization' header was not present on a request."))]
     MissingAuthorizationHeader,
 
-    /// The 'Authorization' query parameter was not present on a request.
-    #[snafu(display("The 'Authorization' query parameter was not present on a request."))]
-    MissingAuthorizationQuery,
-
     /// The 'Authorization' header was present on a request but its value could not be parsed.
     /// This can occur if the header value did not solely contain visible ASCII characters.
     #[snafu(display("The 'Authorization' header was present on a request but its value could not be parsed. Reason: {reason}"))]
@@ -56,6 +52,20 @@ pub enum AuthError {
         "The 'Authorization' header did not contain the expected 'Bearer ...token' format."
     ))]
     MissingBearerToken,
+
+    /// No query parameters were found on the request.
+    #[snafu(display("No query parameters were found on the request."))]
+    MissingQueryParams,
+
+    /// Query parameters were found on the request, but the expected token parameter wasn't.
+    #[snafu(display(
+        "Query parameters were found on the request, but the expected token parameter wasn't."
+    ))]
+    MissingTokenQueryParam,
+
+    /// Query parameters were found on the request, and the expected token parameter was found, but it had no value assigned ("?token=").
+    #[snafu(display("Query parameters were found on the request, and the expected token parameter was found, but it had no value assigned (\"?token=\")."))]
+    EmptyTokenQueryParam,
 
     /// The DecodingKey, required for decoding tokens, could not be created.
     #[snafu(display(
@@ -124,13 +134,19 @@ impl IntoResponse for AuthError {
             err @ AuthError::MissingAuthorizationHeader => {
                 (StatusCode::UNAUTHORIZED, Cow::Owned(err.to_string()))
             }
-            err @ AuthError::MissingAuthorizationQuery => {
-                (StatusCode::UNAUTHORIZED, Cow::Owned(err.to_string()))
-            }
             err @ AuthError::InvalidAuthorizationHeader { reason: _ } => {
                 (StatusCode::UNAUTHORIZED, Cow::Owned(err.to_string()))
             }
             err @ AuthError::MissingBearerToken => {
+                (StatusCode::UNAUTHORIZED, Cow::Owned(err.to_string()))
+            }
+            err @ AuthError::MissingQueryParams => {
+                (StatusCode::UNAUTHORIZED, Cow::Owned(err.to_string()))
+            }
+            err @ AuthError::MissingTokenQueryParam => {
+                (StatusCode::UNAUTHORIZED, Cow::Owned(err.to_string()))
+            }
+            err @ AuthError::EmptyTokenQueryParam => {
                 (StatusCode::UNAUTHORIZED, Cow::Owned(err.to_string()))
             }
             err @ AuthError::CreateDecodingKey { source: _ } => (

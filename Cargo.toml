@@ -19,10 +19,11 @@ educe = { version = "0.5", default-features = false, features = ["Debug"] }
 futures = "0.3"
 http = "1"
 jsonwebtoken = "9"
+nonempty = "0.10.0"
 reqwest = { version = "0.12", features = ["json"], default-features = false }
 serde = "1"
-serde_json = "1"
 serde-querystring = "0.2.1"
+serde_json = "1"
 serde_with = "3"
 snafu = "0.8"
 time = "0.3"

@@ -101,7 +101,7 @@ impl KeycloakAuthInstance {
             let kc_server = kc_server.clone();
             let kc_realm = kc_realm.clone();
             let oidc_discovery_endpoint = oidc_discovery_endpoint.clone();
-            let retry_strat = Retry {
+            let retry_strategy = Retry {
                 max_tries: kc_config.retry.0,
                 delay: Some(try_again::Delay::Static {
                     delay: std::time::Duration::from_secs(kc_config.retry.1),
@@ -116,7 +116,7 @@ impl KeycloakAuthInstance {
                     kc_realm,
                     oidc_discovery_endpoint = ?oidc_discovery_endpoint.0.to_string()
                 );
-                perform_oidc_discovery(oidc_discovery_endpoint, retry_strat)
+                perform_oidc_discovery(oidc_discovery_endpoint, retry_strategy)
                     .instrument(span)
                     .await
             }
@@ -129,6 +129,18 @@ impl KeycloakAuthInstance {
             config: kc_config,
             oidc_discovery_endpoint,
             discovery,
+        }
+    }
+
+    pub(crate) async fn perform_oidc_discovery(&self) {
+        // Wait for an ongoing discovery or dispatch a new discovery process.
+        if self.discovery.is_pending() {
+            self.discovery.notified().await;
+        } else {
+            self.discovery
+                .dispatch(self.oidc_discovery_endpoint.clone())
+                .await
+                .expect("No Join error");
         }
     }
 
@@ -172,12 +184,12 @@ impl<'a> DecodingKeys<'a> {
 
 async fn perform_oidc_discovery(
     oidc_discovery_endpoint: OidcDiscoveryEndpoint,
-    retry_strat: Retry,
+    retry_strategy: Retry,
 ) -> Result<DiscoveredData, AuthError> {
     tracing::info!("Starting OIDC discovery.");
 
     // Load OIDC config.
-    let oidc_config = try_again::retry_async(retry_strat, try_again::TokioSleep {}, move || {
+    let oidc_config = try_again::retry_async(retry_strategy, try_again::TokioSleep {}, move || {
         let url = oidc_discovery_endpoint.0.clone();
         async move {
             oidc_discovery::retrieve_oidc_config(url.clone())
@@ -206,7 +218,7 @@ async fn perform_oidc_discovery(
         })?;
 
     // Load JWK set if endpoint was parsable.
-    let jwk_set = try_again::retry_async(retry_strat, try_again::TokioSleep {}, move || {
+    let jwk_set = try_again::retry_async(retry_strategy, try_again::TokioSleep {}, move || {
         let url = jwk_set_endpoint.clone();
         async move {
             oidc_discovery::retrieve_jwk_set(url.clone())
