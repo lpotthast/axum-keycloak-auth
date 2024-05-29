@@ -42,6 +42,10 @@ pub enum AuthError {
     #[snafu(display("The 'Authorization' header was not present on a request."))]
     MissingAuthorizationHeader,
 
+    /// The 'Authorization' query parameter was not present on a request.
+    #[snafu(display("The 'Authorization' query parameter was not present on a request."))]
+    MissingAuthorizationQuery,
+
     /// The 'Authorization' header was present on a request but its value could not be parsed.
     /// This can occur if the header value did not solely contain visible ASCII characters.
     #[snafu(display("The 'Authorization' header was present on a request but its value could not be parsed. Reason: {reason}"))]
@@ -118,6 +122,9 @@ impl IntoResponse for AuthError {
                 Cow::Owned(err.to_string()),
             ),
             err @ AuthError::MissingAuthorizationHeader => {
+                (StatusCode::UNAUTHORIZED, Cow::Owned(err.to_string()))
+            }
+            err @ AuthError::MissingAuthorizationQuery => {
                 (StatusCode::UNAUTHORIZED, Cow::Owned(err.to_string()))
             }
             err @ AuthError::InvalidAuthorizationHeader { reason: _ } => {

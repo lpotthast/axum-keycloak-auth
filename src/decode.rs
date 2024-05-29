@@ -15,14 +15,32 @@ use crate::instance::KeycloakAuthInstance;
 use crate::role::ExpectRoles;
 use crate::role::KeycloakRole;
 use crate::role::NumRoles;
+use crate::TokenSource;
 
 use super::{error::AuthError, role::ExtractRoles, role::Role};
 
 pub(crate) struct RawToken<'a>(pub(crate) &'a str);
 
-pub(crate) fn extract_jwt_token(headers: &HeaderMap<HeaderValue>) -> Result<&str, AuthError> {
-    headers
-        .get(http::header::AUTHORIZATION)
+pub(crate) fn extract_jwt_token(
+    token_source: TokenSource,
+    headers: &HeaderMap<HeaderValue>,
+    uri_query: HashMap<String, String>,
+) -> Result<String, AuthError> {
+    let auth_header = headers.get(http::header::AUTHORIZATION);
+    let query_param_token = extract_token_from_query(&uri_query);
+
+    match token_source {
+        TokenSource::Header => extract_token_from_header(auth_header),
+        TokenSource::Query => query_param_token.ok_or(AuthError::MissingAuthorizationQuery),
+        TokenSource::Both => match auth_header {
+            None => query_param_token.ok_or(AuthError::MissingAuthorizationQuery),
+            some_opt => extract_token_from_header(some_opt),
+        },
+    }
+}
+
+fn extract_token_from_header(header: Option<&HeaderValue>) -> Result<String, AuthError> {
+    header
         .ok_or(AuthError::MissingAuthorizationHeader)?
         .to_str()
         .map_err(|err| AuthError::InvalidAuthorizationHeader {
@@ -30,6 +48,16 @@ pub(crate) fn extract_jwt_token(headers: &HeaderMap<HeaderValue>) -> Result<&str
         })?
         .strip_prefix("Bearer ")
         .ok_or(AuthError::MissingBearerToken)
+        .map(|str_ref| str_ref.to_string())
+}
+
+fn extract_token_from_query(uri_query: &HashMap<String, String>) -> Option<String> {
+    if uri_query.contains_key("token") {
+        let token = uri_query.get("token").unwrap().clone();
+        Some(token)
+    } else {
+        None
+    }
 }
 
 pub(crate) async fn validate_raw_token<R, Extra>(

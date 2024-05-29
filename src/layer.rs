@@ -7,6 +7,7 @@ use typed_builder::TypedBuilder;
 
 use crate::decode::{validate_raw_token, KeycloakToken, ProfileAndEmail, RawToken};
 use crate::error::AuthError;
+use crate::TokenSource;
 use crate::{instance::KeycloakAuthInstance, role::Role, service::KeycloakAuthService};
 
 use super::PassthroughMode;
@@ -41,6 +42,10 @@ where
     /// leave this empty and perform manuakl role checks in your route handlers.
     #[builder(default = vec![], setter(into))]
     pub required_roles: Vec<R>,
+
+    /// Specifies where the token is expected to be found.
+    #[builder(default = TokenSource::Header, setter(into))]
+    pub token_source: TokenSource,
 
     #[builder(default = uuid::Uuid::now_v7(), setter(skip))]
     id: uuid::Uuid,
