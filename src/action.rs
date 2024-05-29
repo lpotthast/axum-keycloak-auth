@@ -98,9 +98,9 @@ impl<I: Debug + Clone + Send + Sync + 'static, O: Debug + Send + Sync + 'static>
             *input.write().await = Some(action_input.clone());
             pending.store(true, std::sync::atomic::Ordering::Release);
             let new_value = fut.await;
-            let new_value_recv_at = time::OffsetDateTime::now_utc();
+            let new_value_received_at = time::OffsetDateTime::now_utc();
             *value.write().await = Some(new_value);
-            *value_received.write().await = Some(new_value_recv_at);
+            *value_received.write().await = Some(new_value_received_at);
             *version.write().await += 1;
             *input.write().await = None;
             pending.store(false, std::sync::atomic::Ordering::Release);

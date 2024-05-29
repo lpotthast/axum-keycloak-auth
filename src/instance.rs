@@ -22,7 +22,7 @@ impl OidcDiscoveryEndpoint {
     pub(crate) fn from_server_and_realm(server: Url, realm: &str) -> Self {
         let mut url = server;
         url.path_segments_mut()
-            .expect("URL not to be a 'cannnot-be-a-base' URL. We have to append segments.")
+            .expect("URL not to be a 'cannot-be-a-base' URL. We have to append segments.")
             .extend(&["realms", &realm, ".well-known", "openid-configuration"]);
         Self(url)
     }
