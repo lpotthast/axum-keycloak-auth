@@ -144,10 +144,6 @@ impl KeycloakAuthInstance {
         }
     }
 
-    pub(crate) fn is_ready(&self) -> bool {
-        !self.discovery.is_pending()
-    }
-
     /// Returns true after a successful OIDC discovery.
     pub async fn is_operational(&self) -> bool {
         self.discovery
@@ -159,7 +155,7 @@ impl KeycloakAuthInstance {
 
     pub(crate) async fn decoding_keys(&self) -> DecodingKeys<'_> {
         DecodingKeys {
-            // Note: Tokios RwLock implementation prioritizes write access to prevent starvation. This is fine and will not block writes.
+            // Note: Tokio's RwLock implementation prioritizes write access to prevent starvation. This is fine and will not block writes.
             lock: self.discovery.value().await,
         }
     }

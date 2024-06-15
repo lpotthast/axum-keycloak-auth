@@ -134,6 +134,7 @@ pub struct StandardClaims<Extra> {
     pub iss: String,
     /// Audience (who or what the token is intended for).
     #[serde_as(deserialize_as = "OneOrMany<_>")]
+    #[serde(default)]
     pub aud: Vec<String>,
     /// Subject (whom the token refers to).
     pub sub: String,

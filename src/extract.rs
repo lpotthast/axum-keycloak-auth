@@ -16,7 +16,7 @@ pub type ExtractedToken<'a> = Cow<'a, str>;
 ///
 /// Note: The current return type and caller impl does not allow to return multiple tokens from a request.
 /// We may implement this feature in the future. This could allow the QueryParamTokenExtractor to extract all tokens found.
-pub trait TokenExtractor: Send + Sync {
+pub trait TokenExtractor: Send + Sync + std::fmt::Debug {
     fn extract<'a>(&self, request: &'a Request) -> Result<ExtractedToken<'a>, AuthError>;
 }
 
@@ -85,16 +85,14 @@ impl TokenExtractor for QueryParamTokenExtractor {
 pub(crate) fn extract_jwt<'a>(
     request: &'a Request<axum::body::Body>,
     extractors: &NonEmpty<Arc<dyn TokenExtractor>>,
-) -> Result<ExtractedToken<'a>, AuthError> {
-    // NOTE: This initial binding will never be used,
-    // as the upcoming for-loop will be executed at least once,
-    // thank to the NonEmpty vec!
-    let result = Ok(ExtractedToken::Borrowed(""));
+) -> Option<ExtractedToken<'a>> {
     for extractor in extractors {
-        let result = extractor.extract(request);
-        if let Ok(jwt) = result {
-            return Ok(jwt);
+        match extractor.extract(request) {
+            Ok(jwt) => return Some(jwt),
+            Err(err) => {
+                tracing::debug!(?extractor, ?err, "Extractor failed");
+            }
         }
     }
-    result
+    None
 }

@@ -5,10 +5,12 @@
         "jsonwebtoken",
         "jwks",
         "keycloak",
+        "nocapture",
         "oidc",
         "Oidc",
         "querystring",
         "reqwest",
+        "testcontainers",
         "tokio",
         "uuid"
     ]
