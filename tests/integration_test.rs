@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use http::StatusCode;
 use keycloak::{
     types::{
         ClientRepresentation, CredentialRepresentation, RealmRepresentation, RoleRepresentation,
@@ -8,6 +9,7 @@ use keycloak::{
     KeycloakAdmin,
 };
 use reqwest::Client;
+use assertr::prelude::*;
 
 use keycloak_container::KeycloakContainer;
 use serde::Deserialize;
@@ -58,10 +60,10 @@ async fn test_integration() {
     let data = response.json::<WhoAmIResponse>().await.unwrap();
     tracing::info!(?status, ?data);
 
-    assert_eq!(status, 200);
-    assert_eq!(data.name, "test-user-mail@foo.bar");
-    assert_eq!(data.keycloak_uuid, "a7060488-c80b-40c5-83e2-d7000bf9738e");
-    assert!(data.token_valid_for_whole_seconds > 0);
+    assert_that(status).is_equal_to(StatusCode::OK);
+    assert_that(data.name.as_str()).is_equal_to("test-user-mail@foo.bar");
+    assert_that(data.keycloak_uuid.as_str()).is_equal_to("a7060488-c80b-40c5-83e2-d7000bf9738e");
+    assert_that(data.token_valid_for_whole_seconds).is_greater_than(0);
 
     be_jh.abort();
 }

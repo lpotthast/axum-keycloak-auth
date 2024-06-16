@@ -47,3 +47,4 @@ testcontainers = "0.17.0"
 tower-http = { version = "0.5.2", features = ["trace"] }
 tracing-subscriber = "0.3.18"
 uuid = { version = "1.8.0", features = ["v7", "serde"] }
+assertr = { git = "https://github.com/lpotthast/assertr", branch = "main" }
