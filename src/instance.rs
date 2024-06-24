@@ -23,7 +23,7 @@ impl OidcDiscoveryEndpoint {
         let mut url = server;
         url.path_segments_mut()
             .expect("URL not to be a 'cannot-be-a-base' URL. We have to append segments.")
-            .extend(&["realms", &realm, ".well-known", "openid-configuration"]);
+            .extend(&["realms", realm, ".well-known", "openid-configuration"]);
         Self(url)
     }
 }
@@ -50,7 +50,7 @@ pub struct KeycloakConfig {
 }
 
 fn debug_decoding_keys(
-    decoding_keys: &Vec<jsonwebtoken::DecodingKey>,
+    decoding_keys: &[jsonwebtoken::DecodingKey],
     f: &mut std::fmt::Formatter<'_>,
 ) -> std::fmt::Result {
     f.write_fmt(format_args!("len: {}", decoding_keys.len()))
