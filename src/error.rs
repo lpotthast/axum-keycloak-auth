@@ -53,6 +53,24 @@ pub enum AuthError {
     ))]
     MissingBearerToken,
 
+    /// No query parameters were found on the request.
+    #[snafu(display("No query parameters were found on the request."))]
+    MissingQueryParams,
+
+    /// Query parameters were found on the request, but the expected token parameter wasn't.
+    #[snafu(display(
+        "Query parameters were found on the request, but the expected token parameter wasn't."
+    ))]
+    MissingTokenQueryParam,
+
+    /// Query parameters were found on the request, and the expected token parameter was found, but it had no value assigned ("?token=").
+    #[snafu(display("Query parameters were found on the request, and the expected token parameter was found, but it had no value assigned (\"?token=\")."))]
+    EmptyTokenQueryParam,
+
+    /// No JWT could be extracted from the request.
+    #[snafu(display("No JWT could be extracted from the request."))]
+    MissingToken,
+
     /// The DecodingKey, required for decoding tokens, could not be created.
     #[snafu(display(
         "The DecodingKey, required for decoding tokens, could not be created. Source: {source}"
@@ -126,14 +144,25 @@ impl IntoResponse for AuthError {
             err @ AuthError::MissingBearerToken => {
                 (StatusCode::UNAUTHORIZED, Cow::Owned(err.to_string()))
             }
+            err @ AuthError::MissingQueryParams => {
+                (StatusCode::UNAUTHORIZED, Cow::Owned(err.to_string()))
+            }
+            err @ AuthError::MissingTokenQueryParam => {
+                (StatusCode::UNAUTHORIZED, Cow::Owned(err.to_string()))
+            }
+            err @ AuthError::EmptyTokenQueryParam => {
+                (StatusCode::UNAUTHORIZED, Cow::Owned(err.to_string()))
+            }
+            err @ AuthError::MissingToken => {
+                (StatusCode::UNAUTHORIZED, Cow::Owned(err.to_string()))
+            }
             err @ AuthError::CreateDecodingKey { source: _ } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Cow::Owned(err.to_string()),
             ),
-            err @ AuthError::DecodeHeader { source: _ } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Cow::Owned(err.to_string()),
-            ),
+            err @ AuthError::DecodeHeader { source: _ } => {
+                (StatusCode::BAD_REQUEST, Cow::Owned(err.to_string()))
+            }
             err @ AuthError::NoDecodingKeys => {
                 (StatusCode::UNAUTHORIZED, Cow::Owned(err.to_string()))
             }

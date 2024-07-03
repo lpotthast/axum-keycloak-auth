@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     sync::Arc,
     task::{Context, Poll},
 };
@@ -10,11 +9,8 @@ use http::Request;
 use serde::de::DeserializeOwned;
 
 use crate::{
-    decode::{extract_jwt_token, KeycloakToken},
-    error::AuthError,
-    layer::KeycloakAuthLayer,
-    role::Role,
-    KeycloakAuthStatus, PassthroughMode,
+    error::AuthError, extract, layer::KeycloakAuthLayer, role::Role, KeycloakAuthStatus,
+    PassthroughMode,
 };
 
 #[derive(Clone)]
@@ -53,7 +49,27 @@ where
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        match (self.layer.instance.is_ready(), self.inner.poll_ready(cx)) {
+        // Once ready, we shall always be ready, independent of future discovery requests,
+        // satisfying a `poll_ready` requirement!
+        let is_ready = self.layer.instance.discovery.version() > 0;
+
+        if is_ready {
+            tracing::debug!("Ready to process requests.");
+        } else {
+            tracing::debug!("Not ready to process requests. Waiting for initial discovery...");
+
+            // We have to assume that the discovery action was initialized.
+            // Our waker handling in would otherwise be wrong!
+            assert!(self.layer.instance.discovery.is_pending());
+            let instance = self.layer.instance.clone();
+            let waker = cx.waker().clone();
+            tokio::spawn(async move {
+                instance.discovery.notified().await;
+                waker.wake();
+            });
+        }
+
+        match (is_ready, self.inner.poll_ready(cx)) {
             (true, Poll::Ready(t)) => Poll::Ready(t),
             (false, _) => Poll::Pending,
             (_, Poll::Pending) => Poll::Pending,
@@ -61,6 +77,8 @@ where
     }
 
     fn call(&mut self, mut request: Request<Body>) -> Self::Future {
+        tracing::debug!("Validating request...");
+
         let clone = self.inner.clone();
         let cloned_layer = self.layer.clone();
 
@@ -70,7 +88,13 @@ where
         let passthrough_mode = cloned_layer.passthrough_mode;
 
         Box::pin(async move {
-            match process_request(&cloned_layer, request.headers().clone()).await {
+            // Process the request.
+            let result = match extract::extract_jwt(&request, &cloned_layer.token_extractors) {
+                Some(token) => cloned_layer.validate_raw_token(&token).await,
+                None => Err(AuthError::MissingToken),
+            };
+
+            match result {
                 Ok((raw_claims, keycloak_token)) => {
                     if let Some(raw_claims) = raw_claims {
                         request.extensions_mut().insert(raw_claims);
@@ -99,22 +123,4 @@ where
             }
         })
     }
-}
-
-async fn process_request<R, Extra>(
-    kc_layer: &KeycloakAuthLayer<R, Extra>,
-    request_headers: http::HeaderMap<http::HeaderValue>,
-) -> Result<
-    (
-        Option<HashMap<String, serde_json::Value>>,
-        KeycloakToken<R, Extra>,
-    ),
-    AuthError,
->
-where
-    R: Role,
-    Extra: DeserializeOwned + Clone,
-{
-    let raw_token_str = extract_jwt_token(&request_headers)?;
-    kc_layer.validate_raw_token(raw_token_str).await
 }

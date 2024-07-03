@@ -1,3 +1,4 @@
+use nonempty::NonEmpty;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -5,8 +6,11 @@ use std::{fmt::Debug, sync::Arc};
 use tower::Layer;
 use typed_builder::TypedBuilder;
 
-use crate::decode::{validate_raw_token, KeycloakToken, ProfileAndEmail, RawToken};
+use crate::decode::{
+    decode_and_validate, parse_raw_claims, KeycloakToken, ProfileAndEmail, RawToken,
+};
 use crate::error::AuthError;
+use crate::extract::TokenExtractor;
 use crate::{instance::KeycloakAuthInstance, role::Role, service::KeycloakAuthService};
 
 use super::PassthroughMode;
@@ -38,9 +42,13 @@ where
     /// These roles are always required.
     /// Should a route protected by this layer be accessed by a user not having this role, an error is generated.
     /// If fine grained role-based access management in required,
-    /// leave this empty and perform manuakl role checks in your route handlers.
+    /// leave this empty and perform manual role checks in your route handlers.
     #[builder(default = vec![], setter(into))]
     pub required_roles: Vec<R>,
+
+    /// Specifies where the token is expected to be found.
+    #[builder(default = nonempty::nonempty![Arc::new(crate::extract::AuthHeaderTokenExtractor {})])]
+    pub token_extractors: NonEmpty<Arc<dyn TokenExtractor>>,
 
     #[builder(default = uuid::Uuid::now_v7(), setter(skip))]
     id: uuid::Uuid,
@@ -54,7 +62,7 @@ where
     R: Role,
     Extra: DeserializeOwned + Clone,
 {
-    /// Allows to validate a raw keycloak token given as &str (without "Bearer " part).
+    /// Allows to validate a raw keycloak token given as &str (without the "Bearer " part when taken from an authorization header).
     /// This method is helpful if you wish to validate a token which does not pass the axum middleware
     /// or if you wish to validate a token in a different context.
     pub async fn validate_raw_token(
@@ -67,14 +75,15 @@ where
         ),
         AuthError,
     > {
-        validate_raw_token::<R, Extra>(
+        let raw_claims = decode_and_validate(
             self.instance.as_ref(),
             RawToken(raw_token),
             &self.expected_audiences,
-            self.persist_raw_claims,
-            &self.required_roles,
         )
-        .await
+        .await?;
+
+        parse_raw_claims::<R, Extra>(raw_claims, self.persist_raw_claims, &self.required_roles)
+            .await
     }
 }
 
@@ -106,9 +115,13 @@ where
 
 #[cfg(test)]
 mod test {
+    use std::sync::Arc;
+
+    use nonempty::NonEmpty;
     use url::Url;
 
     use crate::{
+        extract::{AuthHeaderTokenExtractor, QueryParamTokenExtractor, TokenExtractor},
         instance::{KeycloakAuthInstance, KeycloakConfig},
         layer::KeycloakAuthLayer,
         PassthroughMode,
@@ -147,6 +160,13 @@ mod test {
             .persist_raw_claims(false)
             .expected_audiences(vec![String::from("account")])
             .required_roles(vec![String::from("administrator")])
+            .token_extractors(NonEmpty::<Arc<dyn TokenExtractor>> {
+                head: Arc::new(AuthHeaderTokenExtractor::default()),
+                tail: vec![
+                    Arc::new(QueryParamTokenExtractor::default()),
+                    Arc::new(QueryParamTokenExtractor::extracting_key("jwt")),
+                ],
+            })
             .build();
     }
 }

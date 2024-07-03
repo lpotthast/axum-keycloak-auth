@@ -64,3 +64,15 @@ pub async fn protected(Extension(token): Extension<KeycloakToken<Role>>) -> Resp
 | ---- | ------------------ |
 | 0.6  | 0.2                |
 | 0.7  | 0.3 - 0.5          |
+
+## Development
+
+### Tests
+
+Run test with
+
+    cargo test
+
+Pass the `--nocapture` flag when developing to be able to see log/tracing output.
+
+    cargo test -- --nocapture

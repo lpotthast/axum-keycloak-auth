@@ -169,6 +169,52 @@
 //! - `PassthroughMode::Block`: Immediately return an error-response should authentication fail. This is the preferred mode and the default if omitted.
 //! - `PassthroughMode::Pass`: Always store a `KeycloakAuthStatus` containing the authentication result and defer the response generation to the handler or any deeper layers. You may want to use this mode i fine-grained error handling is required or you want to use additional layers which could still prove the user authenticated.
 //!
+//! # Using custom token extractors
+//!
+//! By default, request headers are checked for presence of an "authorization" header,
+//! which is expected to contain the typical "`Bearer <token>`" string.
+//!
+//! You have the ability to change this behavior to your liking through use of the `TokenExtractor` trait,
+//! which allows for customized strategies on how to retrieve the token from an axum request.
+//!
+//! The `token_extractors` field on the `KeycloakAuthLayer` builder accepts a non-empty vec of extractors.
+//!
+//! ```rust,no_run
+//! use std::sync::Arc;
+//! use axum_keycloak_auth::{
+//!     NonEmpty, PassthroughMode,
+//!     instance::KeycloakAuthInstance,
+//!     layer::KeycloakAuthLayer,
+//!     extract::{AuthHeaderTokenExtractor, QueryParamTokenExtractor, TokenExtractor}
+//! };
+//!
+//! let instance: KeycloakAuthInstance = todo!();
+//!
+//! let layer = KeycloakAuthLayer::<String>::builder()
+//!     .instance(instance)
+//!     .passthrough_mode(PassthroughMode::Block)
+//!     .expected_audiences(vec![String::from("account")])
+//!     // ...
+//!     .token_extractors(NonEmpty::<Arc<dyn TokenExtractor>> {
+//!         head: Arc::new(AuthHeaderTokenExtractor::default()),
+//!         tail: vec![
+//!             Arc::new(QueryParamTokenExtractor::default()),
+//!             Arc::new(QueryParamTokenExtractor::extracting_key("jwt")),
+//!         ],
+//!     })
+//!     .build();
+//! ```
+//!
+//! Extractors are called in order of their definition in the `token_extractors` vec.
+//! The token from the first extractor able to successfully extract one is used to further validate the request.
+//! Other extractors are no longer considered.
+//!
+//! This crate implements two extraction strategies:
+//!   - `AuthHeaderTokenExtractor`: Extracts the token from the `http::header::AUTHORIZATION` header.
+//!   - `QueryParamTokenExtractor`: Extracts the token from a query parameter (by default named "token"). Use with caution!
+//!
+//! By default, when not explicitly setting `token_extractors`, a single `AuthHeaderTokenExtractor::default()` is used.
+//!
 
 #![forbid(unsafe_code)]
 //#![warn(missing_docs)]
@@ -181,6 +227,7 @@ use role::Role;
 mod action;
 pub mod decode;
 pub mod error;
+pub mod extract;
 pub mod instance;
 pub mod layer;
 pub mod oidc;
@@ -190,6 +237,9 @@ pub mod service;
 
 // Re-export the Url struct used when configuring a `KeycloakAuthInstance`.
 pub use url::Url;
+
+// Re-export the NonEmpty struct used when configuring a `KeycloakAuthLayer`.
+pub use nonempty::NonEmpty;
 
 use serde::de::DeserializeOwned;
 
