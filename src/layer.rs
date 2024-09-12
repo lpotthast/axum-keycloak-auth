@@ -15,7 +15,7 @@ use crate::{instance::KeycloakAuthInstance, role::Role, service::KeycloakAuthSer
 
 use super::PassthroughMode;
 
-/// Add this layer to a router to protected the contained route handlers.
+/// Add this layer to a router to protect the contained route handlers.
 /// Authentication happens by looking for the `Authorization` header on requests and parsing the contained JWT bearer token.
 /// See the crate level documentation for how this layer can be created and used.
 #[derive(Clone, TypedBuilder)]
@@ -41,7 +41,7 @@ where
 
     /// These roles are always required.
     /// Should a route protected by this layer be accessed by a user not having this role, an error is generated.
-    /// If fine grained role-based access management in required,
+    /// If fine-grained role-based access management in required,
     /// leave this empty and perform manual role checks in your route handlers.
     #[builder(default = vec![], setter(into))]
     pub required_roles: Vec<R>,

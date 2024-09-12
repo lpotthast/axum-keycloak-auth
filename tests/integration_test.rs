@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use assertr::prelude::*;
 use http::StatusCode;
 use keycloak::{
     types::{
@@ -9,7 +10,6 @@ use keycloak::{
     KeycloakAdmin,
 };
 use reqwest::Client;
-use assertr::prelude::*;
 
 use keycloak_container::KeycloakContainer;
 use serde::Deserialize;
@@ -78,7 +78,7 @@ async fn configure_keycloak(admin_client: &KeycloakAdmin) {
             display_name: Some("test-realm".to_owned()),
             registration_email_as_username: Some(true),
             clients: Some(vec![
-                // Being public allows and accepting direct-access-grants allows us to login with grant type "password".
+                // Being public and accepting direct-access-grants allows us to log in with grant type "password".
                 ClientRepresentation {
                     enabled: Some(true),
                     public_client: Some(true),

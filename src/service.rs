@@ -36,8 +36,7 @@ where
     }
 }
 
-impl<S, R, Extra> tower::Service<http::Request<axum::body::Body>>
-    for KeycloakAuthService<S, R, Extra>
+impl<S, R, Extra> tower::Service<Request<Body>> for KeycloakAuthService<S, R, Extra>
 where
     S: tower::Service<Request<Body>, Response = axum::response::Response> + Clone + Send + 'static,
     S::Future: Send + 'static,

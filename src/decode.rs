@@ -23,7 +23,7 @@ pub(crate) struct RawToken<'a>(pub(crate) &'a str);
 impl<'a> RawToken<'a> {
     pub(crate) fn decode_header(&self) -> Result<jsonwebtoken::Header, AuthError> {
         let jwt_header = jsonwebtoken::decode_header(self.0).context(DecodeHeaderSnafu {})?;
-        tracing::debug!(?jwt_header, "Decoded JWT header");
+        debug!(?jwt_header, "Decoded JWT header");
         Ok(jwt_header)
     }
 
@@ -84,7 +84,8 @@ pub(crate) async fn decode_and_validate(
         // Second decode
         if retry {
             let decoding_keys = kc_instance.decoding_keys().await;
-            raw_claims = raw_token.decode_and_validate(&header, expected_audiences, decoding_keys.iter());
+            raw_claims =
+                raw_token.decode_and_validate(&header, expected_audiences, decoding_keys.iter());
         }
     }
 
