@@ -1,7 +1,5 @@
 use tracing_subscriber::{
-    prelude::__tracing_subscriber_SubscriberExt,
-    util::SubscriberInitExt,
-    Layer,
+    prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt, Layer,
 };
 
 pub fn init_subscriber() {

@@ -23,16 +23,17 @@ pub async fn start_axum_backend(keycloak_url: Url, realm: String) -> JoinHandle<
             .build(),
     );
 
-    let router = Router::new().route("/who-am-i", get(who_am_i))
-    .layer(TraceLayer::new_for_http())
-    .layer(
-        KeycloakAuthLayer::<String>::builder()
-            .instance(keycloak_auth_instance)
-            .passthrough_mode(PassthroughMode::Block)
-            .expected_audiences(vec![String::from("account")])
-            .persist_raw_claims(false)
-            .build(),
-    );
+    let router = Router::new()
+        .route("/who-am-i", get(who_am_i))
+        .layer(TraceLayer::new_for_http())
+        .layer(
+            KeycloakAuthLayer::<String>::builder()
+                .instance(keycloak_auth_instance)
+                .passthrough_mode(PassthroughMode::Block)
+                .expected_audiences(vec![String::from("account")])
+                .persist_raw_claims(false)
+                .build(),
+        );
 
     let listener = TcpListener::bind("127.0.0.1:9999")
         .await

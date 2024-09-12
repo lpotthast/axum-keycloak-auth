@@ -2,12 +2,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use jsonwebtoken::errors::ErrorKind;
+use jsonwebtoken::Header;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, OneOrMany};
 use snafu::ResultExt;
 use tracing::debug;
-
 
 use crate::error::DecodeHeaderSnafu;
 use crate::error::DecodeSnafu;
@@ -23,7 +23,7 @@ pub type RawClaims = HashMap<String, serde_json::Value>;
 pub(crate) struct RawToken<'a>(pub(crate) &'a str);
 
 impl<'a> RawToken<'a> {
-    pub(crate) fn decode_header(&self) -> Result<jsonwebtoken::Header, AuthError> {
+    pub(crate) fn decode_header(&self) -> Result<Header, AuthError> {
         let jwt_header = jsonwebtoken::decode_header(self.0).context(DecodeHeaderSnafu {})?;
         debug!(?jwt_header, "Decoded JWT header");
         Ok(jwt_header)
@@ -31,7 +31,7 @@ impl<'a> RawToken<'a> {
 
     pub(crate) fn decode_and_validate<'d>(
         &self,
-        header: &jsonwebtoken::Header,
+        header: &Header,
         expected_audiences: &[String],
         decoding_keys: impl Iterator<Item = &'d jsonwebtoken::DecodingKey>,
     ) -> Result<RawClaims, AuthError> {
@@ -64,39 +64,47 @@ pub(crate) async fn decode_and_validate(
 ) -> Result<RawClaims, AuthError> {
     let header = raw_token.decode_header()?;
 
-    // First decode. This may fail if known decoding keys are out of date (for example if the Keycloak server changed).
-    let mut raw_claims = {
+    async fn try_decode(
+        kc_instance: &KeycloakAuthInstance,
+        header: &Header,
+        raw_token: &RawToken<'_>,
+        expected_audiences: &[String],
+    ) -> Result<RawClaims, AuthError> {
         let decoding_keys = kc_instance.decoding_keys().await;
-        raw_token.decode_and_validate(&header, expected_audiences, decoding_keys.iter())
-    };
+        raw_token.decode_and_validate(header, expected_audiences, decoding_keys.iter())
+    }
+
+    // First decode. This may fail if known decoding keys are out of date (for example if the Keycloak server changed).
+    let mut raw_claims = try_decode(kc_instance, &header, &raw_token, expected_audiences).await;
 
     if raw_claims.is_err() {
-        // Reload decoding keys. This may delay handling of the request in flight by a substantial amount of time
+        // If it makes sense to do so, refresh the decoding keys through a new discovery process
+        // and try to decode again.
+        // This may delay handling of the request in flight by a non-marginal amount of time
         // but may allow us to acknowledge it in the end without rejecting the call immediately,
-        // which would then require a retry from our caller!
+        // which would then (probably) require a retry from our caller anyway!
         #[allow(clippy::unwrap_used)]
         let retry = match raw_claims.as_ref().unwrap_err() {
-            AuthError::NoDecodingKeys => {
-                kc_instance.perform_oidc_discovery().await;
-                true
-            }
+            AuthError::NoDecodingKeys => true,
             AuthError::Decode { source } => match source.kind() {
-                ErrorKind::InvalidRsaKey(_) 
-                | ErrorKind::InvalidEcdsaKey 
-                | ErrorKind::RsaFailedSigning => {
-                    kc_instance.perform_oidc_discovery().await;
-                    true
-                }
+                // While rare, if this occurs, a valid key can be retrieved from Keycloak.
+                ErrorKind::InvalidRsaKey(_) => true,
+                // Added for completeness, though its relevance is uncertain.
+                ErrorKind::InvalidEcdsaKey => true,
+                // May occur after a private key change in Keycloak.
+                // However, such changes are infrequent, and without rate limiting,
+                // this can lead to excessive requests to the Keycloak server
+                // through our Axum backend.
+                ErrorKind::RsaFailedSigning => true,
                 _ => false,
-            }
+            },
             _ => false,
         };
 
         // Second decode
         if retry {
-            let decoding_keys = kc_instance.decoding_keys().await;
-            raw_claims =
-                raw_token.decode_and_validate(&header, expected_audiences, decoding_keys.iter());
+            kc_instance.perform_oidc_discovery().await;
+            raw_claims = try_decode(kc_instance, &header, &raw_token, expected_audiences).await;
         }
     }
 
