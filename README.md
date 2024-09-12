@@ -7,17 +7,21 @@ Protect axum routes with a JWT emitted by Keycloak.
 - Tower layer / service that can be attached to axum routers.
 - Automatic OIDC discovery
 - Forwarding only requests providing a verifiable and non-expired JWT.
-- Ability to allow forwarding a failed authentication attempt to possibly handle the authentication using another middleware.
+- Ability to allow forwarding a failed authentication attempt to possibly handle the authentication using another
+  middleware.
 - Ability to access the extracted JWT data (including roles, the KC uuid, ...) in route handler function.
 - Tests to check that one or more required or forbidden Keycloak realm or client roles were included in the JWT.
 - Ability to access the JWT's raw claims in a handler, allowing to extract custom attributes.
-- An error type implementing IntoResponse providing exact information about why authentication failed in an error response.
+- An error type implementing IntoResponse providing exact information about why authentication failed in an error
+  response.
 - Ability to define a custom role type from your application to which all roles are automatically parsed.
 
 ## Planned
 
-- Ability to provide a custom type into which the token is parsed, with which non-standard JWT claims can be extracted without overhead.
-- Allowing fine-grained control over how an `AuthError` is converted into a response. Giving the user control and the ability to add context, roll their own.
+- Ability to provide a custom type into which the token is parsed, with which non-standard JWT claims can be extracted
+  without overhead.
+- Allowing fine-grained control over how an `AuthError` is converted into a response. Giving the user control and the
+  ability to add context, roll their own.
 
 ## Usage
 
@@ -35,10 +39,10 @@ pub fn protected_router(instance: KeycloakAuthInstance) -> Router {
     Router::new()
         .route("/protected", get(protected))
         .layer(
-             KeycloakAuthLayer::<Role>::builder()
-                 .instance(instance)
-                 .passthrough_mode(PassthroughMode::Block)
-                 .build(),
+            KeycloakAuthLayer::<Role>::builder()
+                .instance(instance)
+                .passthrough_mode(PassthroughMode::Block)
+                .build(),
         )
 }
 
@@ -61,9 +65,9 @@ pub async fn protected(Extension(token): Extension<KeycloakToken<Role>>) -> Resp
 ## Axum compatibility
 
 | axum | axum-keycloak-auth |
-| ---- | ------------------ |
+|------|--------------------|
 | 0.6  | 0.2                |
-| 0.7  | 0.3 - 0.5          |
+| 0.7  | 0.3 - 0.6          |
 
 ## Development
 
