@@ -34,17 +34,17 @@ serde_with = "3.8.1"
 snafu = "0.8.3"
 time = "0.3.36"
 tokio = "1.38.0"
-tower = "0.4.13"
+tower = "0.5.1"
 tracing = "0.1.40"
 try-again = "0.1.1"
-typed-builder = "0.18.2"
+typed-builder = "0.20.0"
 url = "2.5.1"
 uuid = { version = "1.8.0", features = ["v7"] }
 
 [dev-dependencies]
+assertr = { git = "https://github.com/lpotthast/assertr", branch = "main" }
 keycloak = "25.0.0"
-testcontainers = "0.18.0"
+testcontainers = "0.22.0"
 tower-http = { version = "0.5.2", features = ["trace"] }
 tracing-subscriber = "0.3.18"
 uuid = { version = "1.8.0", features = ["v7", "serde"] }
-assertr = { git = "https://github.com/lpotthast/assertr", branch = "main" }
