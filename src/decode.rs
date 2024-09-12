@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use jsonwebtoken::errors::ErrorKind;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, OneOrMany};
 use snafu::ResultExt;
 use tracing::debug;
+
 
 use crate::error::DecodeHeaderSnafu;
 use crate::error::DecodeSnafu;
@@ -74,9 +76,18 @@ pub(crate) async fn decode_and_validate(
         // which would then require a retry from our caller!
         #[allow(clippy::unwrap_used)]
         let retry = match raw_claims.as_ref().unwrap_err() {
-            AuthError::NoDecodingKeys | AuthError::Decode { source: _ } => {
+            AuthError::NoDecodingKeys => {
                 kc_instance.perform_oidc_discovery().await;
                 true
+            }
+            AuthError::Decode { source } => match source.kind() {
+                ErrorKind::InvalidRsaKey(_) 
+                | ErrorKind::InvalidEcdsaKey 
+                | ErrorKind::RsaFailedSigning => {
+                    kc_instance.perform_oidc_discovery().await;
+                    true
+                }
+                _ => false,
             }
             _ => false,
         };
