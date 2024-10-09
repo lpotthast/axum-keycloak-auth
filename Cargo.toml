@@ -43,8 +43,8 @@ uuid = { version = "1.8.0", features = ["v7"] }
 
 [dev-dependencies]
 assertr = { git = "https://github.com/lpotthast/assertr", branch = "main" }
-keycloak = "25.0.0"
-testcontainers = "0.22.0"
-tower-http = { version = "0.5.2", features = ["trace"] }
+keycloak = "26.0.1"
+testcontainers = "0.23.1"
+tower-http = { version = "0.6.1", features = ["trace"] }
 tracing-subscriber = "0.3.18"
 uuid = { version = "1.8.0", features = ["v7", "serde"] }
