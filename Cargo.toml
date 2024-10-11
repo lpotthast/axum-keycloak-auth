@@ -28,7 +28,7 @@ jsonwebtoken = "9.3.0"
 nonempty = "0.10.0"
 reqwest = { version = "0.12.5", features = ["json"], default-features = false }
 serde = "1.0.203"
-serde-querystring = "0.2.1"
+serde-querystring = "0.3.0-beta.0"
 serde_json = "1.0.117"
 serde_with = "3.8.1"
 snafu = "0.8.3"
