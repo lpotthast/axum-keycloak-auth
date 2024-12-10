@@ -114,7 +114,7 @@ pub(crate) async fn decode_and_validate(
 pub(crate) async fn parse_raw_claims<R, Extra>(
     raw_claims: RawClaims,
     persist_raw_claims: bool,
-    required_roles: &[R],
+    required_roles: &[KeycloakRole<R>],
 ) -> Result<
     (
         Option<HashMap<String, serde_json::Value>>,
@@ -299,22 +299,28 @@ where
 {
     type Rejection = AuthError;
 
-    fn expect_roles<I: Into<R> + Clone>(&self, roles: &[I]) -> Result<(), Self::Rejection> {
+    fn expect_roles(&self, roles: &[KeycloakRole<R>]) -> Result<(), Self::Rejection> {
         for expected in roles {
-            let expected: R = expected.clone().into();
-            if !self.roles.iter().any(|role| role.role() == &expected) {
+            if !self.roles.iter().any(|role| role == expected) {
                 return Err(AuthError::MissingExpectedRole {
-                    role: expected.to_string(),
+                    role: match expected {
+                        KeycloakRole::Realm { role } => KeycloakRole::Realm {
+                            role: role.to_string(),
+                        },
+                        KeycloakRole::Client { role, client } => KeycloakRole::Client {
+                            role: role.to_string(),
+                            client: client.to_string(),
+                        },
+                    },
                 });
             }
         }
         Ok(())
     }
 
-    fn not_expect_roles<I: Into<R> + Clone>(&self, roles: &[I]) -> Result<(), Self::Rejection> {
+    fn not_expect_roles(&self, roles: &[KeycloakRole<R>]) -> Result<(), Self::Rejection> {
         for expected in roles {
-            let expected: R = expected.clone().into();
-            if let Some(_role) = self.roles.iter().find(|role| role.role() == &expected) {
+            if self.roles.iter().any(|role| role == expected) {
                 return Err(AuthError::UnexpectedRole);
             }
         }
