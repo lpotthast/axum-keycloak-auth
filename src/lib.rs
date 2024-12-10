@@ -19,7 +19,7 @@
 //! ```rust
 //! use std::sync::Arc;
 //! use axum::{http::StatusCode, response::{Response, IntoResponse}, routing::get, Extension, Router};
-//! use axum_keycloak_auth::{Url, error::AuthError, instance::KeycloakConfig, instance::KeycloakAuthInstance, layer::KeycloakAuthLayer, decode::KeycloakToken, PassthroughMode, expect_role};
+//! use axum_keycloak_auth::{Url, error::AuthError, instance::KeycloakConfig, instance::KeycloakAuthInstance, layer::KeycloakAuthLayer, decode::KeycloakToken, PassthroughMode, expect_role, role::KeycloakRole};
 //!
 //! pub fn public_router() -> Router {
 //!     Router::new()
@@ -27,7 +27,7 @@
 //! }
 //!
 //! pub fn protected_router(instance: KeycloakAuthInstance) -> Router {
-//!     Router::new()
+//! Router::new()
 //!         .route("/protected", get(protected))
 //!         .layer(
 //!              KeycloakAuthLayer::<String>::builder()
@@ -35,7 +35,9 @@
 //!                  .passthrough_mode(PassthroughMode::Block)
 //!                  .persist_raw_claims(false)
 //!                  .expected_audiences(vec![String::from("account")])
-//!                  .required_roles(vec![String::from("administrator")])
+//!                  .required_roles(vec![KeycloakRole::Realm {
+//!                role: String::from("administrator"),
+//!            }])
 //!                  .build(),
 //!         )
 //! }
@@ -49,13 +51,15 @@
 //!
 //! #[allow(dead_code)]
 //! pub fn protect(router:Router, instance: Arc<KeycloakAuthInstance>) -> Router {
-//!     router.layer(
+//! router.layer(
 //!         KeycloakAuthLayer::<String>::builder()
 //!             .instance(instance)
 //!             .passthrough_mode(PassthroughMode::Block)
 //!             .persist_raw_claims(false)
 //!             .expected_audiences(vec![String::from("account")])
-//!             .required_roles(vec![String::from("administrator")])
+//!             .required_roles(vec![KeycloakRole::Realm {
+//!                role: String::from("administrator"),
+//!            }])
 //!             .build(),
 //!     )
 //! }
@@ -77,7 +81,7 @@
 //! }
 //!
 //! pub async fn protected(Extension(token): Extension<KeycloakToken<String>>) -> Response {
-//!     expect_role!(&token, "administrator");
+//!     expect_role!(&token, KeycloakRole::Realm { role: "administrator".into() });
 //!
 //!     tracing::info!("Token payload is {token:#?}");
 //!
@@ -156,8 +160,10 @@
 //! use axum::{http::StatusCode, response::{Response, IntoResponse}, Extension};
 //! use axum_keycloak_auth::{decode::KeycloakToken, expect_role};
 //!
+//! use axum_keycloak_auth::role::KeycloakRole;
+//!
 //! pub async fn protected(Extension(token): Extension<KeycloakToken<Role>>) -> Response {
-//!     expect_role!(&token, Role::Administrator);
+//!     expect_role!(&token, KeycloakRole::Realm {role: Role::Administrator});
 //!     StatusCode::OK.into_response()
 //! }
 //! ```

@@ -9,6 +9,7 @@ use serde_json::json;
 use snafu::Snafu;
 
 use crate::oidc_discovery;
+use crate::role::KeycloakRole;
 
 #[derive(Debug, Clone, Snafu)]
 #[snafu(visibility(pub(crate)))]
@@ -105,7 +106,7 @@ pub enum AuthError {
 
     /// Note: The `IntoResponse` implementation will only show the provided role in a debug build!
     #[snafu(display("An expected role (omitted for security reasons) was missing."))]
-    MissingExpectedRole { role: String },
+    MissingExpectedRole { role: KeycloakRole<String> },
 
     /// An unexpected role was present.
     #[snafu(display("An unexpected role was present."))]

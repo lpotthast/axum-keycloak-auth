@@ -1,4 +1,4 @@
-use std::fmt::{Debug, Display};
+use std::fmt::{Debug, Display, Formatter};
 
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
@@ -26,6 +26,16 @@ pub enum KeycloakRole<R: Role> {
         /// Name of the role
         role: R,
     },
+}
+impl<R: Role> Display for KeycloakRole<R> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KeycloakRole::Realm { role } => f.write_fmt(format_args!("Realm: {}", role)),
+            KeycloakRole::Client { client, role } => {
+                f.write_fmt(format_args!("Client({}): {}", client, role))
+            }
+        }
+    }
 }
 
 impl<R: Role> KeycloakRole<R> {
@@ -78,8 +88,8 @@ where
 pub trait ExpectRoles<R: Role> {
     type Rejection: IntoResponse;
 
-    fn expect_roles<I: Into<R> + Clone>(&self, roles: &[I]) -> Result<(), Self::Rejection>;
-    fn not_expect_roles<I: Into<R> + Clone>(&self, roles: &[I]) -> Result<(), Self::Rejection>;
+    fn expect_roles(&self, roles: &[KeycloakRole<R>]) -> Result<(), Self::Rejection>;
+    fn not_expect_roles(&self, roles: &[KeycloakRole<R>]) -> Result<(), Self::Rejection>;
 }
 
 #[macro_export]

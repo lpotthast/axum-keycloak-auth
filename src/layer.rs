@@ -6,14 +6,14 @@ use std::{fmt::Debug, sync::Arc};
 use tower::Layer;
 use typed_builder::TypedBuilder;
 
+use super::PassthroughMode;
 use crate::decode::{
     decode_and_validate, parse_raw_claims, KeycloakToken, ProfileAndEmail, RawToken,
 };
 use crate::error::AuthError;
 use crate::extract::TokenExtractor;
+use crate::role::KeycloakRole;
 use crate::{instance::KeycloakAuthInstance, role::Role, service::KeycloakAuthService};
-
-use super::PassthroughMode;
 
 /// Add this layer to a router to protect the contained route handlers.
 /// Authentication happens by looking for the `Authorization` header on requests and parsing the contained JWT bearer token.
@@ -44,7 +44,7 @@ where
     /// If fine-grained role-based access management in required,
     /// leave this empty and perform manual role checks in your route handlers.
     #[builder(default = vec![], setter(into))]
-    pub required_roles: Vec<R>,
+    pub required_roles: Vec<KeycloakRole<R>>,
 
     /// Specifies where the token is expected to be found.
     #[builder(default = nonempty::nonempty![Arc::new(crate::extract::AuthHeaderTokenExtractor {})])]
@@ -120,6 +120,7 @@ mod test {
     use nonempty::NonEmpty;
     use url::Url;
 
+    use crate::role::KeycloakRole;
     use crate::{
         extract::{AuthHeaderTokenExtractor, QueryParamTokenExtractor, TokenExtractor},
         instance::{KeycloakAuthInstance, KeycloakConfig},
@@ -159,7 +160,9 @@ mod test {
             .passthrough_mode(PassthroughMode::Block)
             .persist_raw_claims(false)
             .expected_audiences(vec![String::from("account")])
-            .required_roles(vec![String::from("administrator")])
+            .required_roles(vec![KeycloakRole::Realm {
+                role: String::from("administrator"),
+            }])
             .token_extractors(NonEmpty::<Arc<dyn TokenExtractor>> {
                 head: Arc::new(AuthHeaderTokenExtractor::default()),
                 tail: vec![
