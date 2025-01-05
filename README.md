@@ -64,10 +64,11 @@ pub async fn protected(Extension(token): Extension<KeycloakToken<Role>>) -> Resp
 
 ## Axum compatibility
 
-| axum | axum-keycloak-auth |
-|------|--------------------|
-| 0.6  | 0.2                |
-| 0.7  | 0.3 - 0.6          |
+| axum-keycloak-auth | axum |
+|--------------------|------|
+| 0.2                | 0.6  |
+| 0.3 - 0.6          | 0.7  |
+| 0.7                | 0.8  |
 
 ## Development
 
