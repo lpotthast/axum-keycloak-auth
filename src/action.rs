@@ -17,10 +17,15 @@ use tokio::{
     task::JoinHandle,
 };
 
+pub(crate) trait ActionInput: Debug + Clone + Send + Sync + 'static {}
+pub(crate) trait ActionOutput: Debug + Send + Sync + 'static {}
+
+impl<T> ActionInput for T where T: Debug + Clone + Send + Sync + 'static {}
+impl<T> ActionOutput for T where T: Debug + Send + Sync + 'static {}
+
 #[derive(Educe)]
 #[educe(Debug)]
-pub(crate) struct Action<I: Debug + Clone + Send + Sync + 'static, O: Debug + Send + Sync + 'static>
-{
+pub(crate) struct Action<I: ActionInput, O: ActionOutput> {
     /// The current argument that was dispatched to the `async` function.
     /// `Some` while we are waiting for it to resolve, `None` if it has resolved.
     input: Arc<RwLock<Option<I>>>,
@@ -51,7 +56,7 @@ pub(crate) struct Action<I: Debug + Clone + Send + Sync + 'static, O: Debug + Se
 }
 
 #[allow(dead_code)]
-impl<I: Debug + Clone + Send + Sync + 'static, O: Debug + Send + Sync + 'static> Action<I, O> {
+impl<I: ActionInput, O: ActionOutput> Action<I, O> {
     pub(crate) fn new<F, Fu>(action_fn: F) -> Self
     where
         F: Fn(&I) -> Fu + Send + Sync + 'static,
@@ -75,7 +80,7 @@ impl<I: Debug + Clone + Send + Sync + 'static, O: Debug + Send + Sync + 'static>
     }
 
     /// Await the next completion of this action.
-    /// Useful if the action is already pending and you are interested in its upcoming value.
+    /// Useful if the action is already pending, and you are interested in its upcoming value.
     pub(crate) fn notified(&self) -> Notified<'_> {
         self.notify.notified()
     }
@@ -135,5 +140,90 @@ impl<I: Debug + Clone + Send + Sync + 'static, O: Debug + Send + Sync + 'static>
             pending.store(false, std::sync::atomic::Ordering::Release);
             notify.notify_waiters();
         })
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use assertr::prelude::*;
+
+    use super::{Action, ActionInput, ActionOutput};
+
+    pub trait ActionAssertions<I: ActionInput, O: ActionOutput> {
+        fn has_version(self, expected: usize) -> Self;
+        #[allow(clippy::wrong_self_convention)]
+        fn is_pending(self, expected: bool) -> Self;
+        async fn has_input(self, expected: Option<&I>) -> Self
+        where
+            I: PartialEq;
+        async fn has_value(self, expected: Option<&O>) -> Self
+        where
+            O: PartialEq;
+    }
+
+    impl<I: ActionInput, O: ActionOutput, M: Mode> ActionAssertions<I, O>
+        for AssertThat<'_, Action<I, O>, M>
+    {
+        #[track_caller]
+        fn has_version(self, expected: usize) -> Self {
+            self.derive(|it| it.version()).is_equal_to(expected);
+            self
+        }
+
+        #[track_caller]
+        fn is_pending(self, expected: bool) -> Self {
+            self.derive(|it| it.is_pending()).is_equal_to(expected);
+            self
+        }
+
+        async fn has_input(self, expected: Option<&I>) -> Self
+        where
+            I: PartialEq,
+        {
+            {
+                let input = self.actual().input().await;
+                let input_ref = input.as_ref();
+                self.derive(move |_it| input_ref).is_equal_to(expected);
+            }
+            self
+        }
+
+        async fn has_value(self, expected: Option<&O>) -> Self
+        where
+            O: PartialEq,
+        {
+            {
+                let value = self.actual().value().await;
+                let value_ref = value.as_ref();
+                self.derive(move |_it| value_ref).is_equal_to(expected);
+            }
+            self
+        }
+    }
+
+    #[tokio::test]
+    async fn test_action_dispatch() {
+        let action = Action::new(|input: &String| {
+            let out = input.to_owned();
+            async move { out }
+        });
+
+        assert_that(&action)
+            .has_version(0)
+            .is_pending(false)
+            .has_input(None)
+            .await
+            .has_value(None)
+            .await;
+
+        let _dispatch_result = action.dispatch(String::from("result1")).await;
+
+        assert_that(&action)
+            .has_version(1)
+            .is_pending(false)
+            .has_input(None)
+            .await
+            .has_value(Some(&String::from("result1")))
+            .await;
     }
 }
