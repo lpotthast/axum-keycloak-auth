@@ -15,6 +15,8 @@ use crate::{instance::KeycloakAuthInstance, role::Role, service::KeycloakAuthSer
 
 use super::PassthroughMode;
 
+extern crate alloc;
+
 /// Add this layer to a router to protect the contained route handlers.
 /// Authentication happens by looking for the `Authorization` header on requests and parsing the contained JWT bearer token.
 /// See the crate level documentation for how this layer can be created and used.
