@@ -42,7 +42,7 @@ url = "2.5.4"
 uuid = { version = "1.11.0", features = ["v7"] }
 
 [dev-dependencies]
-assertr = { git = "https://github.com/lpotthast/assertr", branch = "main" }
+assertr = "0.1.0"
 keycloak = "26.0.700"
 testcontainers = "0.23.1"
 tower-http = { version = "0.6.2", features = ["trace"] }
