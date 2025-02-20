@@ -208,7 +208,7 @@ mod test {
             async move { out }
         });
 
-        assert_that(&action)
+        assert_that_ref(&action)
             .has_version(0)
             .is_pending(false)
             .has_input(None)
@@ -218,7 +218,7 @@ mod test {
 
         let _dispatch_result = action.dispatch(String::from("result1")).await;
 
-        assert_that(&action)
+        assert_that_ref(&action)
             .has_version(1)
             .is_pending(false)
             .has_input(None)
