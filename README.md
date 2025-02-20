@@ -68,7 +68,7 @@ pub async fn protected(Extension(token): Extension<KeycloakToken<Role>>) -> Resp
 |--------------------|------|
 | 0.2                | 0.6  |
 | 0.3 - 0.6          | 0.7  |
-| 0.7                | 0.8  |
+| 0.7 - 0.8          | 0.8  |
 
 ## Development
 
