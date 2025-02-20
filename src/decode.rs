@@ -22,7 +22,7 @@ pub type RawClaims = HashMap<String, serde_json::Value>;
 
 pub(crate) struct RawToken<'a>(pub(crate) &'a str);
 
-impl<'a> RawToken<'a> {
+impl RawToken<'_> {
     pub(crate) fn decode_header(&self) -> Result<Header, AuthError> {
         let jwt_header = jsonwebtoken::decode_header(self.0).context(DecodeHeaderSnafu {})?;
         debug!(?jwt_header, "Decoded JWT header");

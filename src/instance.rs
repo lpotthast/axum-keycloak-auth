@@ -165,7 +165,7 @@ pub(crate) struct DecodingKeys<'a> {
     lock: RwLockReadGuard<'a, Option<Result<DiscoveredData, AuthError>>>,
 }
 
-impl<'a> DecodingKeys<'a> {
+impl DecodingKeys<'_> {
     /// Iterate over the currently known decoding keys.
     /// This may return an empty iterator if no keys are known!
     pub(crate) fn iter(&self) -> impl Iterator<Item = &jsonwebtoken::DecodingKey> {
@@ -194,23 +194,21 @@ async fn perform_oidc_discovery(
         }
     })
     .await
-    .map_err(|err| {
+    .inspect_err(|err| {
         tracing::error!(
             err = snafu::Report::from_error(err.clone()).to_string(),
             "Could not retrieve OIDC config."
         );
-        err
     })?;
 
     // Parse JWK endpoint if OIDC config is available.
     let jwk_set_endpoint = Url::parse(&oidc_config.standard_claims.jwks_uri)
         .context(JwkEndpointSnafu {})
-        .map_err(|err| {
+        .inspect_err(|err| {
             tracing::error!(
                 err = snafu::Report::from_error(err.clone()).to_string(),
                 "Could not retrieve jwk_set_endpoint_url."
             );
-            err
         })?;
 
     // Load JWK set if endpoint was parsable.
@@ -223,12 +221,11 @@ async fn perform_oidc_discovery(
         }
     })
     .await
-    .map_err(|err| {
+    .inspect_err(|err| {
         tracing::error!(
             err = snafu::Report::from_error(err.clone()).to_string(),
             "Could not retrieve jwk_set."
         );
-        err
     })?;
 
     let num_keys = jwk_set.keys.len();
