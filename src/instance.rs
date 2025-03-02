@@ -4,7 +4,7 @@ use educe::Educe;
 use snafu::ResultExt;
 use tokio::sync::RwLockReadGuard;
 use tracing::Instrument;
-use try_again::Retry;
+use try_again::{StdDuration, delay, retry_async};
 use typed_builder::TypedBuilder;
 use url::Url;
 
@@ -101,12 +101,7 @@ impl KeycloakAuthInstance {
             let kc_server = kc_server.clone();
             let kc_realm = kc_realm.clone();
             let oidc_discovery_endpoint = oidc_discovery_endpoint.clone();
-            let retry_strategy = Retry {
-                max_tries: kc_config.retry.0,
-                delay: Some(try_again::Delay::Static {
-                    delay: std::time::Duration::from_secs(kc_config.retry.1),
-                }),
-            };
+
             async move {
                 let span = tracing::span!(
                     tracing::Level::INFO,
@@ -116,9 +111,13 @@ impl KeycloakAuthInstance {
                     kc_realm,
                     oidc_discovery_endpoint = ?oidc_discovery_endpoint.0.to_string()
                 );
-                perform_oidc_discovery(oidc_discovery_endpoint, retry_strategy)
-                    .instrument(span)
-                    .await
+                perform_oidc_discovery(
+                    oidc_discovery_endpoint,
+                    kc_config.retry.0,
+                    std::time::Duration::from_secs(kc_config.retry.1),
+                )
+                .instrument(span)
+                .await
             }
         });
 
@@ -180,19 +179,18 @@ impl DecodingKeys<'_> {
 
 async fn perform_oidc_discovery(
     oidc_discovery_endpoint: OidcDiscoveryEndpoint,
-    retry_strategy: Retry,
+    num_retries: usize,
+    fixed_delay: StdDuration,
 ) -> Result<DiscoveredData, AuthError> {
     tracing::info!("Starting OIDC discovery.");
 
     // Load OIDC config.
-    let oidc_config = try_again::retry_async(retry_strategy, try_again::TokioSleep {}, move || {
-        let url = oidc_discovery_endpoint.0.clone();
-        async move {
-            oidc_discovery::retrieve_oidc_config(url.clone())
-                .await
-                .context(OidcDiscoverySnafu {})
-        }
+    let oidc_config = retry_async(async move || {
+        oidc_discovery::retrieve_oidc_config(oidc_discovery_endpoint.0.clone())
+            .await
+            .context(OidcDiscoverySnafu {})
     })
+    .delayed_by(delay::Fixed::of(fixed_delay).take(num_retries))
     .await
     .inspect_err(|err| {
         tracing::error!(
@@ -212,14 +210,12 @@ async fn perform_oidc_discovery(
         })?;
 
     // Load JWK set if endpoint was parsable.
-    let jwk_set = try_again::retry_async(retry_strategy, try_again::TokioSleep {}, move || {
-        let url = jwk_set_endpoint.clone();
-        async move {
-            oidc_discovery::retrieve_jwk_set(url.clone())
-                .await
-                .context(JwkSetDiscoverySnafu {})
-        }
+    let jwk_set = retry_async(async move || {
+        oidc_discovery::retrieve_jwk_set(jwk_set_endpoint.clone())
+            .await
+            .context(JwkSetDiscoverySnafu {})
     })
+    .delayed_by(delay::Fixed::of(fixed_delay).take(num_retries))
     .await
     .inspect_err(|err| {
         tracing::error!(
@@ -254,7 +250,7 @@ fn parse_jwks(jwk_set: &jsonwebtoken::jwk::JwkSet) -> Vec<jsonwebtoken::Decoding
             Err(err) => {
                 tracing::error!(?err, "Received JWK from Keycloak which could not be parsed as a DecodingKey. Ignoring the JWK.");
                 None
-            },
+            }
         }
     }).collect::<Vec<_>>()
 }
