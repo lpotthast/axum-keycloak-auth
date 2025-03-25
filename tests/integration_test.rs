@@ -40,9 +40,24 @@ async fn test_integration() {
         )
         .await;
 
-    let response = Client::new()
-        .get("http://127.0.0.1:9999/who-am-i")
-        .bearer_auth(access_token)
+    let backend_url = "http://127.0.0.1:9999";
+
+    let am_i_authenticated_response = Client::new()
+        .get(format!("{backend_url}/am-i-authenticated"))
+        //.bearer_auth( nothing sent here! )
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .unwrap();
+
+    assert_that(am_i_authenticated_response.status()).is_equal_to(StatusCode::OK);
+    assert_that(am_i_authenticated_response.text().await)
+        .is_ok()
+        .is_equal_to("You are not authenticated.");
+
+    let who_am_i_response = Client::new()
+        .get(format!("{backend_url}/who-am-i"))
+        .bearer_auth(access_token.clone())
         .timeout(Duration::from_secs(10))
         .send()
         .await
@@ -55,15 +70,28 @@ async fn test_integration() {
         token_valid_for_whole_seconds: i32,
     }
 
-    tracing::info!(?response);
-    let status = response.status();
-    let data = response.json::<WhoAmIResponse>().await.unwrap();
+    tracing::info!(?who_am_i_response);
+    let status = who_am_i_response.status();
+    let data = who_am_i_response.json::<WhoAmIResponse>().await.unwrap();
     tracing::info!(?status, ?data);
 
     assert_that(status).is_equal_to(StatusCode::OK);
     assert_that(data.name.as_str()).is_equal_to("test-user-mail@foo.bar");
     assert_that(data.keycloak_uuid.as_str()).is_equal_to("a7060488-c80b-40c5-83e2-d7000bf9738e");
     assert_that(data.token_valid_for_whole_seconds).is_greater_than(0);
+
+    let am_i_authenticated_response = Client::new()
+        .get(format!("{backend_url}/am-i-authenticated"))
+        .bearer_auth(access_token.clone())
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .unwrap();
+
+    assert_that(am_i_authenticated_response.status()).is_equal_to(StatusCode::OK);
+    assert_that(am_i_authenticated_response.text().await)
+        .is_ok()
+        .is_equal_to("You are authenticated.");
 
     be_jh.abort();
 }
