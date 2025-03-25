@@ -1,6 +1,6 @@
 [package]
 name = "axum-keycloak-auth"
-version = "0.8.1"
+version = "0.8.2"
 edition = "2024"
 rust-version = "1.85.0"
 authors = ["Lukas Potthast <privat@lukas-potthast.de>"]
@@ -42,6 +42,7 @@ url = "2.5.4"
 uuid = { version = "1.11.0", features = ["v7"] }
 
 [dev-dependencies]
+axum = { version = "0.8.1", features = ["macros"] }
 assertr = "0.1.0"
 keycloak = "26.0.700"
 testcontainers = "0.23.1"
