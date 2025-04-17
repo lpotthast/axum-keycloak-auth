@@ -372,7 +372,7 @@ pub struct Profile {
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct Email {
     /// Keycloak: Email address of the user.
-    pub email: String,
+    pub email: Option<String>,
     /// Keycloak: Whether the users email is verified.
     pub email_verified: bool,
 }
