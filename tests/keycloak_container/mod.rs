@@ -1,8 +1,8 @@
 use keycloak::{KeycloakAdmin, KeycloakAdminToken, KeycloakTokenSupplier};
 use testcontainers::{
-    core::{ContainerPort, WaitFor},
-    runners::AsyncRunner,
-    GenericImage, ImageExt,
+    core::{ContainerPort, WaitFor}, runners::AsyncRunner,
+    GenericImage,
+    ImageExt,
 };
 use url::Url;
 
@@ -24,18 +24,15 @@ impl KeycloakContainer {
         let admin_password = "admin".to_owned();
 
         // This setup is roughly equivalent to the following cli command:
-        // `docker run -p 8080:8080 -e KEYCLOAK_ADMIN=admin -e KEYCLOAK_ADMIN_PASSWORD=admin quay.io/keycloak/keycloak:25.0.0 start-dev`
+        // `docker run -p 8080:8080 -e KEYCLOAK_ADMIN=admin -e KEYCLOAK_ADMIN_PASSWORD=admin quay.io/keycloak/keycloak:26.2.4 start-dev`
 
-        let keycloak_image = GenericImage::new("quay.io/keycloak/keycloak", "25.0.0")
+        let keycloak_image = GenericImage::new("quay.io/keycloak/keycloak", "26.2.4")
             .with_exposed_port(ContainerPort::Tcp(8080))
             .with_wait_for(WaitFor::message_on_stdout(
-                "Keycloak 25.0.0 on JVM (powered by Quarkus 3.8.5) started",
+                "Keycloak 26.2.4 on JVM (powered by Quarkus 3.20.0) started",
             ))
             .with_wait_for(WaitFor::message_on_stdout(
                 "Listening on: http://0.0.0.0:8080",
-            ))
-            .with_wait_for(WaitFor::message_on_stdout(
-                "Management interface listening on http://0.0.0.0:9000",
             ));
 
         let container_request = keycloak_image

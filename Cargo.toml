@@ -1,6 +1,6 @@
 [package]
 name = "axum-keycloak-auth"
-version = "0.8.2"
+version = "0.8.3"
 edition = "2024"
 rust-version = "1.85.0"
 authors = ["Lukas Potthast <privat@lukas-potthast.de>"]
@@ -37,15 +37,15 @@ tokio = "1.42.0"
 tower = "0.5.2"
 tracing = "0.1.41"
 try-again = "0.2.0"
-typed-builder = "0.20.0"
+typed-builder = "0.21.0"
 url = "2.5.4"
 uuid = { version = "1.11.0", features = ["v7"] }
 
 [dev-dependencies]
-axum = { version = "0.8.1", features = ["macros"] }
-assertr = "0.1.0"
-keycloak = "26.0.700"
-testcontainers = "0.23.1"
-tower-http = { version = "0.6.2", features = ["trace"] }
+axum = { version = "0.8.4", features = ["macros"] }
+assertr = "0.3.1"
+keycloak = "26.2.300"
+testcontainers = "0.24.0"
+tower-http = { version = "0.6.4", features = ["trace"] }
 tracing-subscriber = "0.3.19"
-uuid = { version = "1.11.0", features = ["v7", "serde"] }
+uuid = { version = "1.16.0", features = ["v7", "serde"] }
