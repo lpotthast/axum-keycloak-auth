@@ -37,7 +37,7 @@ tokio = "1.42.0"
 tower = "0.5.2"
 tracing = "0.1.41"
 try-again = "0.2.0"
-typed-builder = "0.20.0"
+typed-builder = "0.21.0"
 url = "2.5.4"
 uuid = { version = "1.11.0", features = ["v7"] }
 
