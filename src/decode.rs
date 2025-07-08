@@ -366,15 +366,15 @@ pub struct Profile {
     /// Keycloak: Last name.
     pub family_name: Option<String>,
     /// Keycloak: Username of the user.
-    pub preferred_username: String,
+    pub preferred_username: Option<String>,
 }
 
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct Email {
     /// Keycloak: Email address of the user.
-    pub email: String,
+    pub email: Option<String>,
     /// Keycloak: Whether the users email is verified.
-    pub email_verified: bool,
+    pub email_verified: Option<bool>,
 }
 
 #[derive(serde::Deserialize, Debug, Clone)]
