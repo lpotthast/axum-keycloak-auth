@@ -1,4 +1,4 @@
-use std::ops::Deref;
+use std::{ops::Deref, time::Duration};
 
 use educe::Educe;
 use snafu::ResultExt;
@@ -47,6 +47,9 @@ pub struct KeycloakConfig {
     /// The retry strategy to be used: (maximum tries, delay in seconds).
     #[builder(default = (5, 1))]
     pub retry: (usize, u64),
+
+    #[builder(default = None)]
+    pub timeout: Option<Duration>,
 }
 
 fn debug_decoding_keys(
@@ -115,6 +118,7 @@ impl KeycloakAuthInstance {
                     oidc_discovery_endpoint,
                     kc_config.retry.0,
                     std::time::Duration::from_secs(kc_config.retry.1),
+                    kc_config.timeout,
                 )
                 .instrument(span)
                 .await
@@ -181,14 +185,27 @@ async fn perform_oidc_discovery(
     oidc_discovery_endpoint: OidcDiscoveryEndpoint,
     num_retries: usize,
     fixed_delay: StdDuration,
+    timeout: Option<Duration>,
 ) -> Result<DiscoveredData, AuthError> {
     tracing::info!("Starting OIDC discovery.");
 
+    // Configure HTTP client
+    let http_client = {
+        let mut builder = reqwest::Client::builder();
+        if let Some(timeout) = timeout {
+            builder = builder.timeout(timeout);
+        }
+        builder.build().expect("build HTTP client")
+    };
+
     // Load OIDC config.
-    let oidc_config = retry_async(async move || {
-        oidc_discovery::retrieve_oidc_config(oidc_discovery_endpoint.0.clone())
-            .await
-            .context(OidcDiscoverySnafu {})
+    let oidc_config = retry_async({
+        let http_client = http_client.clone();
+        async move || {
+            oidc_discovery::retrieve_oidc_config(&http_client, oidc_discovery_endpoint.0.clone())
+                .await
+                .context(OidcDiscoverySnafu {})
+        }
     })
     .delayed_by(delay::Fixed::of(fixed_delay).take(num_retries))
     .await
@@ -210,10 +227,13 @@ async fn perform_oidc_discovery(
         })?;
 
     // Load JWK set if endpoint was parsable.
-    let jwk_set = retry_async(async move || {
-        oidc_discovery::retrieve_jwk_set(jwk_set_endpoint.clone())
-            .await
-            .context(JwkSetDiscoverySnafu {})
+    let jwk_set = retry_async({
+        let http_client = http_client.clone();
+        async move || {
+            oidc_discovery::retrieve_jwk_set(&http_client, jwk_set_endpoint.clone())
+                .await
+                .context(JwkSetDiscoverySnafu {})
+        }
     })
     .delayed_by(delay::Fixed::of(fixed_delay).take(num_retries))
     .await

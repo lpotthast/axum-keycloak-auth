@@ -18,6 +18,7 @@
 //!
 //! ```rust
 //! use std::sync::Arc;
+//! use std::time::Duration;
 //! use axum::{http::StatusCode, response::{Response, IntoResponse}, routing::get, Extension, Router};
 //! use axum_keycloak_auth::{Url, error::AuthError, instance::KeycloakConfig, instance::KeycloakAuthInstance, layer::KeycloakAuthLayer, decode::KeycloakToken, PassthroughMode, expect_role};
 //!
@@ -103,6 +104,7 @@
 //!         KeycloakConfig::builder()
 //!             .server(Url::parse("https://localhost:8443/").unwrap())
 //!             .realm(String::from("MyRealm"))
+//!             .timeout(Some(Duration::from_secs(5)))
 //!             .build(),
 //!     );
 //!     let router = public_router().merge(protected_router(keycloak_auth_instance));
