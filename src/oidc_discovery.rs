@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::oidc::OidcConfig;
-use reqwest::IntoUrl;
+use reqwest::{Client, IntoUrl};
 use serde::Deserialize;
 use snafu::{ResultExt, Snafu};
 
@@ -15,9 +15,10 @@ pub enum RequestError {
 }
 
 pub(crate) async fn retrieve_oidc_config(
+    http_client: &Client,
     discovery_endpoint: impl IntoUrl,
 ) -> Result<OidcConfig, RequestError> {
-    reqwest::Client::new()
+    http_client
         .get(discovery_endpoint)
         .send()
         .await
@@ -30,13 +31,14 @@ pub(crate) async fn retrieve_oidc_config(
 }
 
 pub(crate) async fn retrieve_jwk_set(
+    http_client: &Client,
     jwk_set_endpoint: impl IntoUrl,
 ) -> Result<jsonwebtoken::jwk::JwkSet, RequestError> {
     #[derive(Deserialize)]
     pub struct RawJwkSet {
         pub keys: Vec<serde_json::Value>,
     }
-    let raw_set = reqwest::Client::new()
+    let raw_set = http_client
         .get(jwk_set_endpoint)
         .send()
         .await
