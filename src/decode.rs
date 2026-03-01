@@ -1,13 +1,14 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::{str::FromStr, sync::Arc};
 
-use jsonwebtoken::errors::ErrorKind;
 use jsonwebtoken::Header;
+use jsonwebtoken::errors::ErrorKind;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, OneOrMany};
+use serde_with::{OneOrMany, serde_as};
 use snafu::ResultExt;
 use tracing::debug;
+use uuid::Uuid;
 
 use crate::error::DecodeHeaderSnafu;
 use crate::error::DecodeSnafu;
@@ -111,19 +112,21 @@ pub(crate) async fn decode_and_validate(
     raw_claims
 }
 
-pub(crate) async fn parse_raw_claims<R, Extra>(
+pub(crate) async fn parse_raw_claims<R, Sub, Extra>(
     raw_claims: RawClaims,
     persist_raw_claims: bool,
     required_roles: &[R],
 ) -> Result<
     (
         Option<HashMap<String, serde_json::Value>>,
-        KeycloakToken<R, Extra>,
+        KeycloakToken<R, Sub, Extra>,
     ),
     AuthError,
 >
 where
     R: Role,
+    Sub: FromStr,
+    Sub::Err: Into<AuthError>,
     Extra: DeserializeOwned + Clone,
 {
     let raw_claims_clone = match persist_raw_claims {
@@ -135,7 +138,7 @@ where
     let standard_claims = serde_json::from_value(value).map_err(|err| AuthError::JsonParse {
         source: Arc::new(err),
     })?;
-    let keycloak_token = KeycloakToken::<R, Extra>::parse(standard_claims)?;
+    let keycloak_token = KeycloakToken::<R, Sub, Extra>::parse(standard_claims)?;
     keycloak_token.assert_not_expired()?;
     keycloak_token.expect_roles(required_roles)?;
     Ok((raw_claims_clone, keycloak_token))
@@ -254,7 +257,7 @@ impl<R: Role> ExtractRoles<R> for ResourceAccess {
 /// }
 /// ```
 #[derive(Debug, PartialEq, Clone)]
-pub struct KeycloakToken<R, Extra = ProfileAndEmail>
+pub struct KeycloakToken<R, Sub = Uuid, Extra = ProfileAndEmail>
 where
     R: Role,
     Extra: DeserializeOwned + Clone,
@@ -270,7 +273,7 @@ where
     /// Audience (who or what the token is intended for).
     pub audience: Vec<String>,
     /// Subject (whom the token refers to). This is the UUID which uniquely identifies this user inside Keycloak.
-    pub subject: String,
+    pub subject: Sub,
     /// Authorized party (the party to which this token was issued).
     pub authorized_party: String,
 
@@ -280,9 +283,11 @@ where
     pub extra: Extra,
 }
 
-impl<R, Extra> KeycloakToken<R, Extra>
+impl<R, Sub, Extra> KeycloakToken<R, Sub, Extra>
 where
     R: Role,
+    Sub: FromStr,
+    Sub::Err: Into<AuthError>,
     Extra: DeserializeOwned + Clone,
 {
     pub(crate) fn parse(raw: StandardClaims<Extra>) -> Result<Self, AuthError> {
@@ -304,7 +309,7 @@ where
             jwt_id: raw.jti,
             issuer: raw.iss,
             audience: raw.aud,
-            subject: raw.sub,
+            subject: raw.sub.parse().map_err(Into::into)?,
             authorized_party: raw.azp,
             roles: {
                 let mut roles = Vec::new();
@@ -327,7 +332,7 @@ where
     }
 }
 
-impl<R, Extra> ExpectRoles<R> for KeycloakToken<R, Extra>
+impl<R, Sub, Extra> ExpectRoles<R> for KeycloakToken<R, Sub, Extra>
 where
     R: Role,
     Extra: DeserializeOwned + Clone,

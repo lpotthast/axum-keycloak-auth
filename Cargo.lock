@@ -141,7 +141,7 @@ dependencies = [
 
 [[package]]
 name = "axum-keycloak-auth"
-version = "0.8.3"
+version = "0.9.0"
 dependencies = [
  "assertr",
  "atomic-time",

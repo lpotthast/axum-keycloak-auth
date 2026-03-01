@@ -1,4 +1,5 @@
 use std::{
+    str::FromStr,
     sync::Arc,
     task::{Context, Poll},
 };
@@ -9,26 +10,26 @@ use http::Request;
 use serde::de::DeserializeOwned;
 
 use crate::{
-    error::AuthError, extract, layer::KeycloakAuthLayer, role::Role, KeycloakAuthStatus,
-    PassthroughMode,
+    KeycloakAuthStatus, PassthroughMode, error::AuthError, extract, layer::KeycloakAuthLayer,
+    role::Role,
 };
 
 #[derive(Clone)]
-pub struct KeycloakAuthService<S, R, Extra>
+pub struct KeycloakAuthService<S, R, Sub, Extra>
 where
     R: Role,
     Extra: DeserializeOwned + Clone,
 {
     inner: S,
-    layer: KeycloakAuthLayer<R, Extra>,
+    layer: KeycloakAuthLayer<R, Sub, Extra>,
 }
 
-impl<S, R, Extra> KeycloakAuthService<S, R, Extra>
+impl<S, R, Sub, Extra> KeycloakAuthService<S, R, Sub, Extra>
 where
     R: Role,
     Extra: DeserializeOwned + Clone,
 {
-    pub fn new(inner: S, layer: &KeycloakAuthLayer<R, Extra>) -> Self {
+    pub fn new(inner: S, layer: &KeycloakAuthLayer<R, Sub, Extra>) -> Self {
         Self {
             inner,
             layer: layer.clone(),
@@ -36,11 +37,13 @@ where
     }
 }
 
-impl<S, R, Extra> tower::Service<Request<Body>> for KeycloakAuthService<S, R, Extra>
+impl<S, R, Sub, Extra> tower::Service<Request<Body>> for KeycloakAuthService<S, R, Sub, Extra>
 where
     S: tower::Service<Request<Body>, Response = axum::response::Response> + Clone + Send + 'static,
     S::Future: Send + 'static,
     R: Role + 'static,
+    Sub: FromStr + Clone + Send + Sync + 'static,
+    Sub::Err: Into<AuthError>,
     Extra: DeserializeOwned + Clone + Sync + Send + 'static,
 {
     type Response = S::Response;
@@ -103,9 +106,9 @@ where
                             request.extensions_mut().insert(keycloak_token);
                         }
                         PassthroughMode::Pass => {
-                            request
-                                .extensions_mut()
-                                .insert(KeycloakAuthStatus::<R, Extra>::Success(keycloak_token));
+                            request.extensions_mut().insert(
+                                KeycloakAuthStatus::<R, Sub, Extra>::Success(keycloak_token),
+                            );
                         }
                     };
                     inner.call(request).await
@@ -115,7 +118,7 @@ where
                     PassthroughMode::Pass => {
                         request
                             .extensions_mut()
-                            .insert(KeycloakAuthStatus::<R, Extra>::Failure(Arc::new(err)));
+                            .insert(KeycloakAuthStatus::<R, Sub, Extra>::Failure(Arc::new(err)));
                         inner.call(request).await
                     }
                 },

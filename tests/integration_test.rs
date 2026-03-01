@@ -3,11 +3,11 @@ use std::time::Duration;
 use assertr::prelude::*;
 use http::StatusCode;
 use keycloak::{
+    KeycloakAdmin,
     types::{
         ClientRepresentation, CredentialRepresentation, RealmRepresentation, RoleRepresentation,
         RolesRepresentation, UserRepresentation,
     },
-    KeycloakAdmin,
 };
 use reqwest::Client;
 

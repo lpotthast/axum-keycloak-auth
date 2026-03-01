@@ -1,8 +1,8 @@
 use keycloak::{KeycloakAdmin, KeycloakAdminToken, KeycloakTokenSupplier};
 use testcontainers::{
-    core::{ContainerPort, WaitFor}, runners::AsyncRunner,
-    GenericImage,
-    ImageExt,
+    GenericImage, ImageExt,
+    core::{ContainerPort, WaitFor},
+    runners::AsyncRunner,
 };
 use url::Url;
 

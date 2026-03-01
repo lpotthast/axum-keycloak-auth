@@ -1,13 +1,13 @@
 use axum::{
-    response::{IntoResponse, Response}, routing::get, Extension,
-    Json,
-    Router,
+    Extension, Json, Router,
+    response::{IntoResponse, Response},
+    routing::get,
 };
 use axum_keycloak_auth::{
-    decode::KeycloakToken, instance::{KeycloakAuthInstance, KeycloakConfig},
+    KeycloakAuthStatus, PassthroughMode,
+    decode::KeycloakToken,
+    instance::{KeycloakAuthInstance, KeycloakConfig},
     layer::KeycloakAuthLayer,
-    KeycloakAuthStatus,
-    PassthroughMode,
 };
 use http::StatusCode;
 use serde::Serialize;

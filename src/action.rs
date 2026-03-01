@@ -3,8 +3,8 @@ use std::{
     option::Option,
     pin::Pin,
     sync::{
-        atomic::{AtomicBool, AtomicUsize},
         Arc,
+        atomic::{AtomicBool, AtomicUsize},
     },
 };
 
@@ -13,7 +13,7 @@ use educe::Educe;
 use futures::Future;
 use tokio::{
     sync::Notify,
-    sync::{futures::Notified, RwLock},
+    sync::{RwLock, futures::Notified},
     task::JoinHandle,
 };
 
