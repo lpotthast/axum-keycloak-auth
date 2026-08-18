@@ -20,14 +20,19 @@ msrv:
 semver-checks:
     cargo semver-checks
 
+# Check the code.
+check:
+    cargo check --all-targets --all-features
+    cargo check --all-targets --no-default-features
+
 # Lint the code.
 clippy:
-    cargo clippy --all --all-features -- -W clippy::pedantic
+    cargo clippy --all --all-targets --all-features -- -W clippy::pedantic
 
 # Run all tests, including integration tests (requires Podman to launch Keycloak containers).
 # We pass the `--nocapture` flag to be able to see tracing output.
 test:
-    cargo test -- --nocapture
+    cargo test  --all --all-features -- --nocapture
 
 # Run security auditing.
 audit:
@@ -42,8 +47,7 @@ tidy:
 # Run the full non-mutating validation suite.
 verify:
     cargo fmt --all -- --check
-    cargo check --all-targets --all-features
-    cargo check --lib --no-default-features
-    cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic
-    cargo test --all --all-features
+    just check
+    just clippy
+    just test
     cargo doc --no-deps --all-features
