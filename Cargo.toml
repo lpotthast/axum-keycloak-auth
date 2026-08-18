@@ -7,11 +7,14 @@ authors = ["Lukas Potthast <privat@lukas-potthast.de>"]
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/lpotthast/axum-keycloak-auth"
+homepage = "https://github.com/lpotthast/axum-keycloak-auth"
+documentation = "https://docs.rs/axum-keycloak-auth"
 description = """
 Protect axum routes with a JWT emitted by Keycloak.
 """
 categories = ["authentication", "web-programming"]
 keywords = ["keycloak", "auth", "jwt", "oidc", "axum"]
+exclude = ["/.idea/", "/.vscode/", "/.github/", "/AGENTS.md", "/Justfile"]
 
 [features]
 default = [
