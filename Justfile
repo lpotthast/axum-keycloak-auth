@@ -5,6 +5,7 @@ default:
 # Install tools required by other recipes.
 install-tools:
     cargo +stable install cargo-minimal-versions --locked
+    cargo install cargo-semver-checks --locked
     cargo +stable install cargo-msrv --locked
 
 # Check if the current dependency version bounds are sufficient.
@@ -14,6 +15,10 @@ minimal-versions:
 # Find the minimum supported rust version.
 msrv:
     cargo msrv find
+
+# Check whether current changes require a breaking release.
+semver-checks:
+    cargo semver-checks
 
 # Lint the code.
 clippy:
@@ -27,7 +32,6 @@ test:
 # Run security auditing.
 audit:
     cargo audit --deny warnings
-
 
 # Update all deps; sort all Cargo.toml deps; format all code.
 tidy:
