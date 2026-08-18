@@ -20,6 +20,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Enabled pedantic Clippy lints and resolved all reported issues.
 - Updated development dependencies.
 - Integration-tests now use latest Keycloak 26.7.1.
+- Migrated atomic-time: 0.1.5 → 0.2.1
+- Migrated educe: 0.6.0 → 0.7.6
 
 ## [0.8.3] - 2025-05-18
 

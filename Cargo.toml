@@ -24,9 +24,9 @@ default-tls = ["reqwest/default-tls"]
 rustls-tls = ["reqwest/rustls-tls"]
 
 [dependencies]
-atomic-time = "0.1.5"
+atomic-time = "0.2.1"
 axum = "0.8.1"
-educe = { version = "0.6.0", default-features = false, features = ["Debug"] }
+educe = { version = "0.7.6", default-features = false, features = ["Debug"] }
 futures = "0.3.31"
 http = "1.2.0"
 jsonwebtoken = "9.3.0"
