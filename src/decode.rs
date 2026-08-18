@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use jsonwebtoken::errors::ErrorKind;
 use jsonwebtoken::Header;
+use jsonwebtoken::errors::ErrorKind;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, OneOrMany};
+use serde_with::{OneOrMany, serde_as};
 use snafu::ResultExt;
 use tracing::debug;
 
@@ -130,8 +130,7 @@ where
         true => Some(raw_claims.clone()),
         false => None,
     };
-    let value = serde_json::Value::from_iter(raw_claims.into_iter());
-
+    let value = serde_json::Value::from_iter(raw_claims);
     let standard_claims = serde_json::from_value(value).map_err(|err| AuthError::JsonParse {
         source: Arc::new(err),
     })?;

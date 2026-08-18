@@ -1,10 +1,15 @@
-use keycloak::{KeycloakAdmin, KeycloakAdminToken, KeycloakTokenSupplier};
+use keycloak::{
+    KeycloakAdmin, KeycloakAdminToken, KeycloakTokenSupplier, prelude::reqwest::Client,
+};
 use testcontainers::{
-    core::{ContainerPort, WaitFor}, runners::AsyncRunner,
-    GenericImage,
-    ImageExt,
+    GenericImage, ImageExt,
+    core::{ContainerPort, WaitFor},
+    runners::AsyncRunner,
 };
 use url::Url;
+
+const KEYCLOAK_VERSION: &str = "26.7.1";
+const KEYCLOAK_QUARKUS_VERSION: &str = "3.33.2.1";
 
 #[allow(dead_code)]
 pub struct KeycloakContainer {
@@ -24,13 +29,13 @@ impl KeycloakContainer {
         let admin_password = "admin".to_owned();
 
         // This setup is roughly equivalent to the following cli command:
-        // `docker run -p 8080:8080 -e KEYCLOAK_ADMIN=admin -e KEYCLOAK_ADMIN_PASSWORD=admin quay.io/keycloak/keycloak:26.2.4 start-dev`
+        // `podman run -p 8080:8080 -e KEYCLOAK_ADMIN=admin -e KEYCLOAK_ADMIN_PASSWORD=admin quay.io/keycloak/keycloak:26.7.1 start-dev`
 
-        let keycloak_image = GenericImage::new("quay.io/keycloak/keycloak", "26.2.4")
+        let keycloak_image = GenericImage::new("quay.io/keycloak/keycloak", KEYCLOAK_VERSION)
             .with_exposed_port(ContainerPort::Tcp(8080))
-            .with_wait_for(WaitFor::message_on_stdout(
-                "Keycloak 26.2.4 on JVM (powered by Quarkus 3.20.0) started",
-            ))
+            .with_wait_for(WaitFor::message_on_stdout(format!(
+                "Keycloak {KEYCLOAK_VERSION} on JVM (powered by Quarkus {KEYCLOAK_QUARKUS_VERSION}) started"
+            )))
             .with_wait_for(WaitFor::message_on_stdout(
                 "Listening on: http://0.0.0.0:8080",
             ));
@@ -66,9 +71,10 @@ impl KeycloakContainer {
     }
 
     pub async fn admin_client(&self) -> KeycloakAdmin {
-        let client = reqwest::Client::new();
+        let keycloak_url = self.url.as_str().trim_end_matches('/');
+        let client = Client::new();
         let admin_token = KeycloakAdminToken::acquire(
-            self.url.as_str(),
+            keycloak_url,
             &self.admin_user,
             &self.admin_password,
             &client,
@@ -76,7 +82,7 @@ impl KeycloakContainer {
         .await
         .expect("Correct credentials");
 
-        KeycloakAdmin::new(self.url.as_str(), admin_token, client)
+        KeycloakAdmin::new(keycloak_url, admin_token, client)
     }
 
     pub async fn perform_password_login(
@@ -86,10 +92,11 @@ impl KeycloakContainer {
         realm: &str,
         client_id: &str,
     ) -> String {
-        let client = reqwest::Client::new();
+        let keycloak_url = self.url.as_str().trim_end_matches('/');
+        let client = Client::new();
 
         let token = KeycloakAdminToken::acquire_custom_realm(
-            self.url.as_str(),
+            keycloak_url,
             username,
             password,
             realm,
@@ -100,7 +107,7 @@ impl KeycloakContainer {
         .await
         .unwrap();
 
-        let access_token = token.get(self.url.as_str()).await.unwrap();
+        let access_token = token.get(keycloak_url).await.unwrap();
 
         tracing::info!(access_token, "Login successful.");
         access_token

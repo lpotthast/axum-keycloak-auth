@@ -1,5 +1,11 @@
 # axum-keycloak-auth
 
+[![Crates.io](https://img.shields.io/crates/v/axum-keycloak-auth.svg)](https://crates.io/crates/axum-keycloak-auth)
+[![Docs.rs](https://docs.rs/axum-keycloak-auth/badge.svg)](https://docs.rs/axum-keycloak-auth)
+[![CI](https://github.com/lpotthast/axum-keycloak-auth/actions/workflows/ci.yml/badge.svg)](https://github.com/lpotthast/axum-keycloak-auth/actions/workflows/ci.yml)
+[![MSRV](https://img.shields.io/badge/MSRV-1.89.0-blue.svg)](https://github.com/lpotthast/axum-keycloak-auth/blob/main/Cargo.toml)
+[![License: MIT OR Apache-2.0](https://img.shields.io/crates/l/axum-keycloak-auth.svg)](#license)
+
 Protect axum routes with a JWT emitted by Keycloak.
 
 ## Features
@@ -74,10 +80,31 @@ pub async fn protected(Extension(token): Extension<KeycloakToken<Role>>) -> Resp
 
 ### Tests
 
-Run test with
+Run test with:
 
-    cargo test
+```shell
+just test
+```
 
-Pass the `--nocapture` flag when developing to be able to see log/tracing output.
+### Dependency Security
 
-    cargo test -- --nocapture
+Run RustSec auditing through:
+
+```shell
+just audit
+```
+
+No advisories are currently ignored or accepted.
+
+### MSRV
+
+The minimum supported Rust version is 1.89.
+
+## License
+
+This project is licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <https://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
+
+at your option.

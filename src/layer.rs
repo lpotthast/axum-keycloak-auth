@@ -7,7 +7,7 @@ use tower::Layer;
 use typed_builder::TypedBuilder;
 
 use crate::decode::{
-    decode_and_validate, parse_raw_claims, KeycloakToken, ProfileAndEmail, RawToken,
+    KeycloakToken, ProfileAndEmail, RawToken, decode_and_validate, parse_raw_claims,
 };
 use crate::error::AuthError;
 use crate::extract::TokenExtractor;
@@ -123,17 +123,17 @@ mod test {
     use url::Url;
 
     use crate::{
+        PassthroughMode,
         extract::{AuthHeaderTokenExtractor, QueryParamTokenExtractor, TokenExtractor},
         instance::{KeycloakAuthInstance, KeycloakConfig},
         layer::KeycloakAuthLayer,
-        PassthroughMode,
     };
 
     #[tokio::test]
     async fn build_basic_layer() {
         let instance = KeycloakAuthInstance::new(
             KeycloakConfig::builder()
-                .server(Url::parse("https://localhost:8443/").unwrap())
+                .server(Url::parse("https://localhost:8443/").expect("valid url"))
                 .realm(String::from("MyRealm"))
                 .retry((10, 2))
                 .build(),
@@ -150,7 +150,7 @@ mod test {
     async fn build_full_layer() {
         let instance = KeycloakAuthInstance::new(
             KeycloakConfig::builder()
-                .server(Url::parse("https://localhost:8443/").unwrap())
+                .server(Url::parse("https://localhost:8443/").expect("valid url"))
                 .realm(String::from("MyRealm"))
                 .retry((10, 2))
                 .build(),

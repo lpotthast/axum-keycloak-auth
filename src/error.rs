@@ -1,9 +1,9 @@
 use std::{borrow::Cow, sync::Arc};
 
 use axum::{
+    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use serde_json::json;
 use snafu::Snafu;
@@ -44,7 +44,9 @@ pub enum AuthError {
 
     /// The 'Authorization' header was present on a request but its value could not be parsed.
     /// This can occur if the header value did not solely contain visible ASCII characters.
-    #[snafu(display("The 'Authorization' header was present on a request but its value could not be parsed. Reason: {reason}"))]
+    #[snafu(display(
+        "The 'Authorization' header was present on a request but its value could not be parsed. Reason: {reason}"
+    ))]
     InvalidAuthorizationHeader { reason: String },
 
     /// The 'Authorization' header was present  and could be parsed, but it did not contain the expected "Bearer {token}" format.
@@ -64,7 +66,9 @@ pub enum AuthError {
     MissingTokenQueryParam,
 
     /// Query parameters were found on the request, and the expected token parameter was found, but it had no value assigned ("?token=").
-    #[snafu(display("Query parameters were found on the request, and the expected token parameter was found, but it had no value assigned (\"?token=\")."))]
+    #[snafu(display(
+        "Query parameters were found on the request, and the expected token parameter was found, but it had no value assigned (\"?token=\")."
+    ))]
     EmptyTokenQueryParam,
 
     /// No JWT could be extracted from the request.

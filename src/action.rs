@@ -3,8 +3,8 @@ use std::{
     option::Option,
     pin::Pin,
     sync::{
-        atomic::{AtomicBool, AtomicUsize},
         Arc,
+        atomic::{AtomicBool, AtomicUsize},
     },
 };
 
@@ -13,7 +13,7 @@ use educe::Educe;
 use futures::Future;
 use tokio::{
     sync::Notify,
-    sync::{futures::Notified, RwLock},
+    sync::{RwLock, futures::Notified},
     task::JoinHandle,
 };
 
@@ -208,7 +208,7 @@ mod test {
             async move { out }
         });
 
-        assert_that_ref(&action)
+        assert_that!(&action)
             .has_version(0)
             .is_pending(false)
             .has_input(None)
@@ -218,7 +218,7 @@ mod test {
 
         let _dispatch_result = action.dispatch(String::from("result1")).await;
 
-        assert_that_ref(&action)
+        assert_that!(&action)
             .has_version(1)
             .is_pending(false)
             .has_input(None)

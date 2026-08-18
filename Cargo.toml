@@ -2,7 +2,7 @@
 name = "axum-keycloak-auth"
 version = "0.8.3"
 edition = "2024"
-rust-version = "1.85.0"
+rust-version = "1.89.0"
 authors = ["Lukas Potthast <privat@lukas-potthast.de>"]
 license = "MIT OR Apache-2.0"
 readme = "README.md"
@@ -14,7 +14,12 @@ categories = ["authentication", "web-programming"]
 keywords = ["keycloak", "auth", "jwt", "oidc", "axum"]
 
 [features]
-default = ["default-tls", "reqwest/charset", "reqwest/http2", "reqwest/macos-system-configuration"]
+default = [
+    "default-tls",
+    "reqwest/charset",
+    "reqwest/http2",
+    "reqwest/macos-system-configuration",
+]
 default-tls = ["reqwest/default-tls"]
 rustls-tls = ["reqwest/rustls-tls"]
 
@@ -42,10 +47,10 @@ url = "2.5.4"
 uuid = { version = "1.11.0", features = ["v7"] }
 
 [dev-dependencies]
-axum = { version = "0.8.4", features = ["macros"] }
-assertr = "0.3.1"
-keycloak = "26.2.300"
-testcontainers = "0.24.0"
-tower-http = { version = "0.6.4", features = ["trace"] }
-tracing-subscriber = "0.3.19"
-uuid = { version = "1.16.0", features = ["v7", "serde"] }
+assertr = "0.6.0"
+axum = { version = "0.8.9", features = ["macros"] }
+keycloak = "26.6.2"
+testcontainers = "0.28.0"
+tower-http = { version = "0.7.0", features = ["trace"] }
+tracing-subscriber = "0.3.23"
+uuid = { version = "1.24.1", features = ["v7", "serde"] }

@@ -1,13 +1,13 @@
 use axum::{
-    response::{IntoResponse, Response}, routing::get, Extension,
-    Json,
-    Router,
+    Extension, Json, Router,
+    response::{IntoResponse, Response},
+    routing::get,
 };
 use axum_keycloak_auth::{
-    decode::KeycloakToken, instance::{KeycloakAuthInstance, KeycloakConfig},
+    KeycloakAuthStatus, PassthroughMode,
+    decode::KeycloakToken,
+    instance::{KeycloakAuthInstance, KeycloakConfig},
     layer::KeycloakAuthLayer,
-    KeycloakAuthStatus,
-    PassthroughMode,
 };
 use http::StatusCode;
 use serde::Serialize;
@@ -54,15 +54,13 @@ pub async fn start_axum_backend(keycloak_url: Url, realm: String) -> JoinHandle<
         .await
         .expect("TcpListener");
 
-    let server_jh = tokio::spawn(async move {
+    tokio::spawn(async move {
         tracing::info!("Serving test backend...");
         axum::serve(listener, router.merge(router2).into_make_service())
             .await
             .expect("Server to start successfully");
         tracing::info!("Test backend stopped!");
-    });
-
-    server_jh
+    })
 }
 
 #[axum::debug_handler]

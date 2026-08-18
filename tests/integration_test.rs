@@ -3,11 +3,11 @@ use std::time::Duration;
 use assertr::prelude::*;
 use http::StatusCode;
 use keycloak::{
+    KeycloakAdmin,
     types::{
         ClientRepresentation, CredentialRepresentation, RealmRepresentation, RoleRepresentation,
         RolesRepresentation, UserRepresentation,
     },
-    KeycloakAdmin,
 };
 use reqwest::Client;
 
@@ -50,8 +50,8 @@ async fn test_integration() {
         .await
         .unwrap();
 
-    assert_that(am_i_authenticated_response.status()).is_equal_to(StatusCode::OK);
-    assert_that(am_i_authenticated_response.text().await)
+    assert_that!(am_i_authenticated_response.status()).is_equal_to(StatusCode::OK);
+    assert_that!(am_i_authenticated_response.text().await)
         .is_ok()
         .is_equal_to("You are not authenticated.");
 
@@ -75,10 +75,10 @@ async fn test_integration() {
     let data = who_am_i_response.json::<WhoAmIResponse>().await.unwrap();
     tracing::info!(?status, ?data);
 
-    assert_that(status).is_equal_to(StatusCode::OK);
-    assert_that(data.name.as_str()).is_equal_to("test-user-mail@foo.bar");
-    assert_that(data.keycloak_uuid.as_str()).is_equal_to("a7060488-c80b-40c5-83e2-d7000bf9738e");
-    assert_that(data.token_valid_for_whole_seconds).is_greater_than(0);
+    assert_that!(status).is_equal_to(StatusCode::OK);
+    assert_that!(data.name.as_str()).is_equal_to("test-user-mail@foo.bar");
+    assert_that!(data.keycloak_uuid.as_str()).is_equal_to("a7060488-c80b-40c5-83e2-d7000bf9738e");
+    assert_that!(data.token_valid_for_whole_seconds).is_greater_than(0);
 
     let am_i_authenticated_response = Client::new()
         .get(format!("{backend_url}/am-i-authenticated"))
@@ -88,8 +88,8 @@ async fn test_integration() {
         .await
         .unwrap();
 
-    assert_that(am_i_authenticated_response.status()).is_equal_to(StatusCode::OK);
-    assert_that(am_i_authenticated_response.text().await)
+    assert_that!(am_i_authenticated_response.status()).is_equal_to(StatusCode::OK);
+    assert_that!(am_i_authenticated_response.text().await)
         .is_ok()
         .is_equal_to("You are authenticated.");
 

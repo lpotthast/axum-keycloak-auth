@@ -9,8 +9,8 @@ use http::Request;
 use serde::de::DeserializeOwned;
 
 use crate::{
-    error::AuthError, extract, layer::KeycloakAuthLayer, role::Role, KeycloakAuthStatus,
-    PassthroughMode,
+    KeycloakAuthStatus, PassthroughMode, error::AuthError, extract, layer::KeycloakAuthLayer,
+    role::Role,
 };
 
 #[derive(Clone)]
