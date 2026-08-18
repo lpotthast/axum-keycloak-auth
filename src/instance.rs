@@ -67,12 +67,11 @@ pub(crate) struct DiscoveredData {
     pub(crate) decoding_keys: Vec<jsonwebtoken::DecodingKey>,
 }
 
-/// The KeycloakAuthInstance is responsible for performing OIDC discovery
-/// and will hold onto the retrieved OIDC configuration, including the decoding keys
-/// used to decode incoming JWTs.
+/// The `KeycloakAuthInstance` is responsible for performing OIDC discovery and will hold onto the
+/// retrieved OIDC configuration, including the decoding keys used to decode incoming JWTs.
 ///
-/// You may want to create only a single insatnce of this struct
-/// to limit the amount of requests made towards your Keycloak server.
+/// You may want to create only a single instance of this struct to limit the amount of requests
+/// made towards your Keycloak server.
 #[derive(Debug)]
 pub struct KeycloakAuthInstance {
     #[allow(dead_code)]
@@ -84,9 +83,10 @@ pub struct KeycloakAuthInstance {
 }
 
 impl KeycloakAuthInstance {
-    /// Creates a new KeycloakAuthInstance. This immediately starts an initial OIDC discovery process.
-    /// The `is_operational` method will tell you if discovery has taken place.
-    /// This may be useful in determining service health.
+    /// Creates a new `KeycloakAuthInstance`. This immediately starts an initial OIDC discovery
+    /// process. The `is_operational` method will tell you if discovery has taken place. This may be
+    /// useful in determining service health.
+    #[must_use]
     pub fn new(kc_config: KeycloakConfig) -> Self {
         let id = uuid::Uuid::now_v7();
         let oidc_discovery_endpoint = OidcDiscoveryEndpoint::from_server_and_realm(
@@ -149,7 +149,7 @@ impl KeycloakAuthInstance {
             .value()
             .await
             .as_ref()
-            .is_some_and(|it| it.is_ok())
+            .is_some_and(Result::is_ok)
     }
 
     pub(crate) async fn decoding_keys(&self) -> DecodingKeys<'_> {
@@ -171,7 +171,7 @@ impl DecodingKeys<'_> {
         self.lock
             .as_ref()
             .map(|r| r.as_ref())
-            .and_then(|r| r.ok())
+            .and_then(Result::ok)
             .map(|d| d.decoding_keys.iter())
             .unwrap_or_default()
     }

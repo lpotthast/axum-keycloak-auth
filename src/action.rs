@@ -36,7 +36,7 @@ pub(crate) struct Action<I: ActionInput, O: ActionOutput> {
 
     #[educe(Debug(ignore))]
     #[allow(clippy::complexity)]
-    action_fn: Arc<dyn Fn(&I) -> Pin<Box<dyn Future<Output = O> + Send + Sync>> + Send + Sync>,
+    operation: Arc<dyn Fn(&I) -> Pin<Box<dyn Future<Output = O> + Send + Sync>> + Send + Sync>,
 
     /// Might be Some if there still is an ongoing operation.
     pending: Arc<AtomicBool>,
@@ -57,20 +57,20 @@ pub(crate) struct Action<I: ActionInput, O: ActionOutput> {
 
 #[allow(dead_code)]
 impl<I: ActionInput, O: ActionOutput> Action<I, O> {
-    pub(crate) fn new<F, Fu>(action_fn: F) -> Self
+    pub(crate) fn new<F, Fu>(operation: F) -> Self
     where
         F: Fn(&I) -> Fu + Send + Sync + 'static,
         Fu: Future<Output = O> + Send + Sync + 'static,
     {
-        let action_fn = Arc::new(move |input: &I| {
-            let fut = action_fn(input);
+        let operation = Arc::new(move |input: &I| {
+            let fut = operation(input);
             Box::pin(fut) as Pin<Box<dyn Future<Output = O> + Send + Sync>>
         });
 
         Self {
             input: Arc::new(RwLock::new(None)),
             input_send: Arc::new(AtomicOptionInstant::none()),
-            action_fn,
+            operation,
             pending: Arc::new(AtomicBool::new(false)),
             notify: Arc::new(Notify::new()),
             value: Arc::new(RwLock::new(None)),
@@ -91,7 +91,7 @@ impl<I: ActionInput, O: ActionOutput> Action<I, O> {
 
     pub(crate) fn pending_for(&self) -> std::time::Duration {
         let started_at: std::time::Instant = self.input_send().expect("Start time when pending");
-        std::time::Instant::now() - started_at
+        started_at.elapsed()
     }
 
     pub(crate) async fn input(&self) -> tokio::sync::RwLockReadGuard<'_, Option<I>> {
@@ -116,7 +116,7 @@ impl<I: ActionInput, O: ActionOutput> Action<I, O> {
     }
 
     pub(crate) fn dispatch(&self, action_input: I) -> JoinHandle<()> {
-        let fut = (self.action_fn)(&action_input);
+        let fut = (self.operation)(&action_input);
         let input = self.input.clone();
         let input_send = self.input_send.clone();
         let version = self.version.clone();
@@ -166,13 +166,13 @@ mod test {
     {
         #[track_caller]
         fn has_version(self, expected: usize) -> Self {
-            self.derive(|it| it.version()).is_equal_to(expected);
+            self.derive(Action::version).is_equal_to(expected);
             self
         }
 
         #[track_caller]
         fn is_pending(self, expected: bool) -> Self {
-            self.derive(|it| it.is_pending()).is_equal_to(expected);
+            self.derive(Action::is_pending).is_equal_to(expected);
             self
         }
 

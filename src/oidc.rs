@@ -1,3 +1,6 @@
+// Retain the terminology used by the external standards these claims and docs mirror.
+#![allow(clippy::doc_link_with_quotes, clippy::doc_markdown)]
+
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
@@ -41,6 +44,8 @@ pub struct OidcConfig {
 
 /// See: `https://www.rfc-editor.org/rfc/rfc8414.html#section-2`
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+// These field names match the standardized discovery claim names.
+#[allow(clippy::struct_field_names)]
 pub struct OAuthDiscoveryClaims {
     /// OPTIONAL. URL of the authorization server's OAuth 2.0
     /// introspection endpoint [RFC7662].

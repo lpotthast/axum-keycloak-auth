@@ -64,9 +64,15 @@ where
     R: Role,
     Extra: DeserializeOwned + Clone,
 {
-    /// Allows to validate a raw keycloak token given as &str (without the "Bearer " part when taken from an authorization header).
-    /// This method is helpful if you wish to validate a token which does not pass the axum middleware
-    /// or if you wish to validate a token in a different context.
+    /// Allows to validate a raw keycloak token given as &str (without the "Bearer " part when
+    /// taken from an authorization header). This method is helpful if you wish to validate a token
+    /// which does not pass the axum middleware or if you wish to validate a token in a different
+    /// context.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AuthError`] if the token cannot be decoded or does not satisfy the configured
+    /// validation requirements.
     pub async fn validate_raw_token(
         &self,
         raw_token: &str,
@@ -98,7 +104,7 @@ where
         f.debug_struct("KeycloakAuthLayer")
             .field("mode", &self.passthrough_mode)
             .field("persist_raw_claims", &self.persist_raw_claims)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

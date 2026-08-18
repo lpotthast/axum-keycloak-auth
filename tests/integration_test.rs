@@ -18,6 +18,13 @@ mod backend;
 mod common;
 mod keycloak_container;
 
+#[derive(Debug, Deserialize)]
+struct WhoAmIResponse {
+    name: String,
+    keycloak_uuid: String,
+    token_valid_for_whole_seconds: i32,
+}
+
 #[tokio::test]
 async fn test_integration() {
     common::tracing::init_subscriber();
@@ -62,13 +69,6 @@ async fn test_integration() {
         .send()
         .await
         .unwrap();
-
-    #[derive(Debug, Deserialize)]
-    struct WhoAmIResponse {
-        name: String,
-        keycloak_uuid: String,
-        token_valid_for_whole_seconds: i32,
-    }
 
     tracing::info!(?who_am_i_response);
     let status = who_am_i_response.status();

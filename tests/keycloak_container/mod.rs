@@ -57,7 +57,7 @@ impl KeycloakContainer {
             .await
             .expect("Keycloak to export port 9000");
 
-        let url = Url::parse(format!("http://127.0.0.1:{}", port).as_str()).unwrap();
+        let url = Url::parse(format!("http://127.0.0.1:{port}").as_str()).unwrap();
         tracing::info!(available_at = ?url, "Keycloak started.");
 
         Self {

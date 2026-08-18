@@ -62,8 +62,6 @@ pub(crate) async fn decode_and_validate(
     raw_token: RawToken<'_>,
     expected_audiences: &[String],
 ) -> Result<RawClaims, AuthError> {
-    let header = raw_token.decode_header()?;
-
     async fn try_decode(
         kc_instance: &KeycloakAuthInstance,
         header: &Header,
@@ -74,6 +72,8 @@ pub(crate) async fn decode_and_validate(
         raw_token.decode_and_validate(header, expected_audiences, decoding_keys.iter())
     }
 
+    let header = raw_token.decode_header()?;
+
     // First decode. This may fail if known decoding keys are out of date (for example if the Keycloak server changed).
     let mut raw_claims = try_decode(kc_instance, &header, &raw_token, expected_audiences).await;
 
@@ -83,7 +83,8 @@ pub(crate) async fn decode_and_validate(
         // This may delay handling of the request in flight by a non-marginal amount of time
         // but may allow us to acknowledge it in the end without rejecting the call immediately,
         // which would then (probably) require a retry from our caller anyway!
-        #[allow(clippy::unwrap_used)]
+        // Keep the matching retry cases separate so each one's rationale remains clear.
+        #[allow(clippy::match_same_arms, clippy::unwrap_used)]
         let retry = match raw_claims.as_ref().unwrap_err() {
             AuthError::NoDecodingKeys => true,
             AuthError::Decode { source } => match source.kind() {
@@ -126,9 +127,10 @@ where
     R: Role,
     Extra: DeserializeOwned + Clone,
 {
-    let raw_claims_clone = match persist_raw_claims {
-        true => Some(raw_claims.clone()),
-        false => None,
+    let raw_claims_clone = if persist_raw_claims {
+        Some(raw_claims.clone())
+    } else {
+        None
     };
     let value = serde_json::Value::from_iter(raw_claims);
     let standard_claims = serde_json::from_value(value).map_err(|err| AuthError::JsonParse {
@@ -318,10 +320,16 @@ where
         time::OffsetDateTime::now_utc() > self.expires_at
     }
 
+    /// Verifies that the token has not expired.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthError::TokenExpired`] if the token's expiration time has passed.
     pub fn assert_not_expired(&self) -> Result<(), AuthError> {
-        match self.is_expired() {
-            true => Err(AuthError::TokenExpired),
-            false => Ok(()),
+        if self.is_expired() {
+            Err(AuthError::TokenExpired)
+        } else {
+            Ok(())
         }
     }
 }

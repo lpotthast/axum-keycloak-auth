@@ -60,7 +60,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets --all-features --locked -- -D warnings
+      - run: cargo clippy --all-targets --all-features --locked -- -D warnings -W clippy::pedantic
 
   test:
     name: Test (stable)

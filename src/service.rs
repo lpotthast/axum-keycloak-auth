@@ -70,8 +70,7 @@ where
 
         match (is_ready, self.inner.poll_ready(cx)) {
             (true, Poll::Ready(t)) => Poll::Ready(t),
-            (false, _) => Poll::Pending,
-            (_, Poll::Pending) => Poll::Pending,
+            (false, _) | (_, Poll::Pending) => Poll::Pending,
         }
     }
 
@@ -107,7 +106,7 @@ where
                                 .extensions_mut()
                                 .insert(KeycloakAuthStatus::<R, Extra>::Success(keycloak_token));
                         }
-                    };
+                    }
                     inner.call(request).await
                 }
                 Err(err) => match passthrough_mode {

@@ -31,8 +31,7 @@ pub enum KeycloakRole<R: Role> {
 impl<R: Role> KeycloakRole<R> {
     pub fn role(&self) -> &R {
         match self {
-            KeycloakRole::Realm { role } => role,
-            KeycloakRole::Client { client: _, role } => role,
+            KeycloakRole::Realm { role } | KeycloakRole::Client { client: _, role } => role,
         }
     }
 }
@@ -43,7 +42,7 @@ pub trait NumRoles {
 
 impl<T: NumRoles> NumRoles for Option<T> {
     fn num_roles(&self) -> usize {
-        self.as_ref().map(|it| it.num_roles()).unwrap_or(0)
+        self.as_ref().map_or(0, NumRoles::num_roles)
     }
 }
 
@@ -56,7 +55,7 @@ pub trait ExtractRoles<R: Role> {
 impl<R: Role, T: ExtractRoles<R>> ExtractRoles<R> for Option<T> {
     fn extract_roles(self, target: &mut Vec<KeycloakRole<R>>) {
         if let Some(inner) = self {
-            inner.extract_roles(target)
+            inner.extract_roles(target);
         }
     }
 }
@@ -78,7 +77,18 @@ where
 pub trait ExpectRoles<R: Role> {
     type Rejection: IntoResponse;
 
+    /// Verifies that all given roles are present.
+    ///
+    /// # Errors
+    ///
+    /// Returns a rejection if any expected role is missing.
     fn expect_roles<I: Into<R> + Clone>(&self, roles: &[I]) -> Result<(), Self::Rejection>;
+
+    /// Verifies that none of the given roles are present.
+    ///
+    /// # Errors
+    ///
+    /// Returns a rejection if any unexpected role is present.
     fn not_expect_roles<I: Into<R> + Clone>(&self, roles: &[I]) -> Result<(), Self::Rejection>;
 }
 

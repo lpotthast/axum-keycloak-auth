@@ -15,8 +15,13 @@ pub type ExtractedToken<'a> = Cow<'a, str>;
 ///   - `QueryParamTokenExtractor`: Extracts the token from a query parameter (for example named "token").
 ///
 /// Note: The current return type and caller impl does not allow to return multiple tokens from a request.
-/// We may implement this feature in the future. This could allow the QueryParamTokenExtractor to extract all tokens found.
+/// We may implement this feature in the future. This could allow the `QueryParamTokenExtractor` to extract all tokens found.
 pub trait TokenExtractor: Send + Sync + std::fmt::Debug {
+    /// Extracts a token from the request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AuthError`] when this extractor cannot find or parse a token.
     fn extract<'a>(&self, request: &'a Request) -> Result<ExtractedToken<'a>, AuthError>;
 }
 
