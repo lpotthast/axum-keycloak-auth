@@ -116,6 +116,20 @@ pub enum AuthError {
     UnexpectedRole,
 }
 
+impl From<uuid::Error> for AuthError {
+    fn from(err: uuid::Error) -> Self {
+        AuthError::InvalidToken {
+            reason: format!("failed to parse parse uuid: {err}"),
+        }
+    }
+}
+
+impl From<std::convert::Infallible> for AuthError {
+    fn from(infallible: std::convert::Infallible) -> Self {
+        match infallible {}
+    }
+}
+
 impl IntoResponse for AuthError {
     fn into_response(self) -> Response {
         let (status, error_message) = match self {

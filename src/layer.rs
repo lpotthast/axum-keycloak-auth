@@ -2,7 +2,7 @@ use nonempty::NonEmpty;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::marker::PhantomData;
-use std::{fmt::Debug, sync::Arc};
+use std::{fmt::Debug, str::FromStr, sync::Arc};
 use tower::Layer;
 use typed_builder::TypedBuilder;
 
@@ -20,11 +20,11 @@ extern crate alloc;
 /// Add this layer to a router to protect the contained route handlers.
 /// Authentication happens by looking for the `Authorization` header on requests and parsing the contained JWT bearer token.
 /// See the crate level documentation for how this layer can be created and used.
-#[derive(Clone, TypedBuilder)]
-pub struct KeycloakAuthLayer<R, Extra = ProfileAndEmail>
+#[derive(TypedBuilder)]
+pub struct KeycloakAuthLayer<R, Sub = uuid::Uuid, Extra = ProfileAndEmail>
 where
     R: Role,
-    Extra: DeserializeOwned + Clone,
+    Extra: DeserializeOwned,
 {
     #[builder(setter(into))]
     pub instance: Arc<KeycloakAuthInstance>,
@@ -57,11 +57,37 @@ where
 
     #[builder(default=PhantomData, setter(skip))]
     phantom: PhantomData<Extra>,
+
+    #[builder(default=PhantomData, setter(skip))]
+    phantom_subject_type: PhantomData<Sub>,
 }
 
-impl<R, Extra> KeycloakAuthLayer<R, Extra>
+// Manually implement Clone so we can avoid a `Clone` bound on `Sub` and `Extra`
+impl<R, Sub, Extra> Clone for KeycloakAuthLayer<R, Sub, Extra>
 where
     R: Role,
+    Extra: DeserializeOwned,
+{
+    fn clone(&self) -> Self {
+        Self {
+            instance: self.instance.clone(),
+            passthrough_mode: self.passthrough_mode,
+            persist_raw_claims: self.persist_raw_claims,
+            expected_audiences: self.expected_audiences.clone(),
+            required_roles: self.required_roles.clone(),
+            token_extractors: self.token_extractors.clone(),
+            id: self.id,
+            phantom: PhantomData,
+            phantom_subject_type: PhantomData,
+        }
+    }
+}
+
+impl<R, Sub, Extra> KeycloakAuthLayer<R, Sub, Extra>
+where
+    R: Role,
+    Sub: FromStr,
+    Sub::Err: Into<AuthError>,
     Extra: DeserializeOwned + Clone,
 {
     /// Allows to validate a raw keycloak token given as &str (without the "Bearer " part when
@@ -79,7 +105,7 @@ where
     ) -> Result<
         (
             Option<HashMap<String, serde_json::Value>>,
-            KeycloakToken<R, Extra>,
+            KeycloakToken<R, Sub, Extra>,
         ),
         AuthError,
     > {
@@ -90,12 +116,12 @@ where
         )
         .await?;
 
-        parse_raw_claims::<R, Extra>(raw_claims, self.persist_raw_claims, &self.required_roles)
+        parse_raw_claims::<R, Sub, Extra>(raw_claims, self.persist_raw_claims, &self.required_roles)
             .await
     }
 }
 
-impl<R, Extra> Debug for KeycloakAuthLayer<R, Extra>
+impl<R, Sub, Extra> Debug for KeycloakAuthLayer<R, Sub, Extra>
 where
     R: Role,
     Extra: DeserializeOwned + Clone,
@@ -108,12 +134,12 @@ where
     }
 }
 
-impl<S, R, Extra> Layer<S> for KeycloakAuthLayer<R, Extra>
+impl<S, R, Sub, Extra> Layer<S> for KeycloakAuthLayer<R, Sub, Extra>
 where
     R: Role,
     Extra: DeserializeOwned + Clone,
 {
-    type Service = KeycloakAuthService<S, R, Extra>;
+    type Service = KeycloakAuthService<S, R, Sub, Extra>;
 
     #[tracing::instrument(level="info", skip_all, fields(id = ?self.id))]
     fn layer(&self, inner: S) -> Self::Service {

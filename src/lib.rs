@@ -258,12 +258,12 @@ pub enum PassthroughMode {
 
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
-pub enum KeycloakAuthStatus<R, Extra>
+pub enum KeycloakAuthStatus<R, Sub, Extra>
 where
     R: Role,
     Extra: DeserializeOwned + Clone,
 {
     // This variant is fairly large, but probably used most of the time. Leaving this non-boxed results in one less allocation each request.
-    Success(decode::KeycloakToken<R, Extra>),
+    Success(decode::KeycloakToken<R, Sub, Extra>),
     Failure(Arc<error::AuthError>),
 }
