@@ -1,2 +1,8 @@
-target/
+# Ignore the Rust compiler output.
+/target
+
+# Ignore macOS related files.
 .DS_Store
+
+# Ignore planning documents.
+/.plan

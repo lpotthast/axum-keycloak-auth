@@ -1,256 +1,373 @@
-use std::ops::Deref;
+//! Keycloak realm configuration, OIDC discovery lifecycle, and operational status.
 
-use educe::Educe;
-use snafu::ResultExt;
-use tokio::sync::RwLockReadGuard;
-use tracing::Instrument;
-use try_again::{StdDuration, delay, retry_async};
+use std::sync::Arc;
+
 use typed_builder::TypedBuilder;
 use url::Url;
 
 use crate::{
-    action::Action,
-    error::{AuthError, JwkEndpointSnafu, JwkSetDiscoverySnafu, OidcDiscoverySnafu},
-    oidc::OidcConfig,
-    oidc_discovery,
+    clock::{Clock, SystemClock},
+    discovery::{
+        DecodingKeys, Discovery, OidcDiscoveryEndpoint, RefreshPolicy, default_discovery_op,
+    },
+    error::{AuthError, ConnectError},
+    http::default_http_client,
+    validation::KeySource,
 };
 
-#[derive(Debug, Clone)]
-pub(crate) struct OidcDiscoveryEndpoint(pub(crate) Url);
+pub use crate::discovery::OperationalStatus;
 
-impl OidcDiscoveryEndpoint {
-    pub(crate) fn from_server_and_realm(server: Url, realm: &str) -> Self {
-        let mut url = server;
-        url.path_segments_mut()
-            .expect("URL not to be a 'cannot-be-a-base' URL. We have to append segments.")
-            .extend(&["realms", realm, ".well-known", "openid-configuration"]);
-        Self(url)
-    }
-}
-
-impl Deref for OidcDiscoveryEndpoint {
-    type Target = Url;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
+/// Configuration used to derive a realm's OIDC discovery endpoint.
 #[derive(Debug, TypedBuilder)]
 pub struct KeycloakConfig {
-    /// Base URL of your Keycloak server. For example: `Url::parse("https://localhost:8443/").unwrap()`.
+    /// Base URL of the Keycloak server.
+    ///
+    /// The realm discovery path is appended to this URL. Both
+    /// `https://keycloak.example` and `https://keycloak.example/auth/` are supported.
     pub server: Url,
 
-    /// The realm of you Keycloak server.
+    /// Keycloak realm name.
     pub realm: String,
 
-    /// The retry strategy to be used: (maximum tries, delay in seconds).
+    /// Retry count and fixed delay in seconds for OIDC discovery and JWKS requests.
+    ///
+    /// The first value is the number of retries after the initial attempt. The default `(5, 1)`
+    /// permits up to six attempts per endpoint with a one-second delay.
     #[builder(default = (5, 1))]
     pub retry: (usize, u64),
 }
 
-fn debug_decoding_keys(
-    decoding_keys: &[jsonwebtoken::DecodingKey],
-    f: &mut std::fmt::Formatter<'_>,
-) -> std::fmt::Result {
-    f.write_fmt(format_args!("len: {}", decoding_keys.len()))
-}
-
-#[derive(TypedBuilder, Educe)]
-#[educe(Debug)]
-pub(crate) struct DiscoveredData {
-    #[allow(dead_code)]
-    pub(crate) oidc_config: OidcConfig,
-    #[allow(dead_code)]
-    pub(crate) jwk_set: jsonwebtoken::jwk::JwkSet,
-    #[educe(Debug(method(debug_decoding_keys)))]
-    pub(crate) decoding_keys: Vec<jsonwebtoken::DecodingKey>,
-}
-
-/// The `KeycloakAuthInstance` is responsible for performing OIDC discovery and will hold onto the
-/// retrieved OIDC configuration, including the decoding keys used to decode incoming JWTs.
+/// Discovers and caches the OIDC discovery document and decoding keys for one Keycloak realm.
 ///
-/// You may want to create only a single instance of this struct to limit the amount of requests
-/// made towards your Keycloak server.
+/// Validation may request one shared on-demand refresh when no usable keys are cached or when no
+/// cached key verifies a token with an unknown `kid` (key ID). The last successful key set remains
+/// available when a refresh fails. Cooldown and backoff limit repeated provider requests.
+///
+/// Share one instance across layers that use the same realm. This avoids duplicate caches and
+/// provider requests.
 #[derive(Debug)]
 pub struct KeycloakAuthInstance {
-    #[allow(dead_code)]
-    pub(crate) id: uuid::Uuid,
-    #[allow(dead_code)]
-    pub(crate) config: KeycloakConfig,
-    pub(crate) oidc_discovery_endpoint: OidcDiscoveryEndpoint,
-    pub(crate) discovery: Action<OidcDiscoveryEndpoint, Result<DiscoveredData, AuthError>>,
+    discovery: Discovery,
 }
 
 impl KeycloakAuthInstance {
-    /// Creates a new `KeycloakAuthInstance`. This immediately starts an initial OIDC discovery
-    /// process. The `is_operational` method will tell you if discovery has taken place. This may be
-    /// useful in determining service health.
+    /// Starts OIDC discovery in a background task and returns immediately.
+    ///
+    /// Until discovery succeeds, authentication fails because no decoding keys are available.
+    /// [`Self::operational_status`] retains the discovery error. Use [`Self::connect`] when startup
+    /// should fail if initial discovery fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside a Tokio runtime, if [`KeycloakConfig::server`] cannot serve as a
+    /// base URL, or if the default HTTP client cannot initialize. Use [`Self::connect`] to receive
+    /// [`ConnectError::InvalidServerUrl`] for an unusable URL.
     #[must_use]
+    // The configuration is taken by value to keep the public signature stable; nothing of it
+    // needs to outlive construction today.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn new(kc_config: KeycloakConfig) -> Self {
-        let id = uuid::Uuid::now_v7();
-        let oidc_discovery_endpoint = OidcDiscoveryEndpoint::from_server_and_realm(
+        Self::with_components(
+            &kc_config,
+            default_http_client(),
+            uuid::Uuid::now_v7(),
+            Arc::new(SystemClock),
+            RefreshPolicy::default(),
+        )
+    }
+
+    /// Creates an instance and waits for initial OIDC discovery.
+    ///
+    /// Provider requests use one shared HTTP client with bounded connect and total-request
+    /// deadlines. Use [`Self::connect_with_client`] to customize deadlines, proxies, trust roots,
+    /// or mTLS through your own [`reqwest::Client`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ConnectError`] when the server URL cannot serve as a base URL or the initial
+    /// discovery fails.
+    ///
+    /// Cancelling this future aborts its in-flight discovery because no instance is returned to
+    /// own the background operation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if polled outside a Tokio runtime or if the default HTTP client cannot initialize.
+    pub async fn connect(kc_config: KeycloakConfig) -> Result<Self, ConnectError> {
+        Self::connect_with_client(kc_config, default_http_client()).await
+    }
+
+    /// Creates an instance with a caller-supplied HTTP client and waits for initial discovery.
+    ///
+    /// The client is reused for initial discovery and later key refreshes. The crate does not add
+    /// timeouts to a supplied client. Configure them on the client when discovery and refresh
+    /// requests need bounded latency.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ConnectError`] when the server URL cannot serve as a base URL or the initial
+    /// discovery fails.
+    ///
+    /// Cancelling this future aborts its in-flight discovery because no instance is returned to
+    /// own the background operation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if polled outside a Tokio runtime.
+    pub async fn connect_with_client(
+        kc_config: KeycloakConfig,
+        client: reqwest::Client,
+    ) -> Result<Self, ConnectError> {
+        if kc_config.server.cannot_be_a_base() {
+            return Err(ConnectError::InvalidServerUrl);
+        }
+        let instance = Self::with_components(
+            &kc_config,
+            client,
+            uuid::Uuid::now_v7(),
+            Arc::new(SystemClock),
+            RefreshPolicy::default(),
+        );
+        instance.ready().await;
+        if instance.is_operational().await {
+            Ok(instance)
+        } else {
+            Err(ConnectError::InitialDiscovery {
+                source: instance
+                    .discovery
+                    .last_discovery_error()
+                    .unwrap_or(AuthError::NoOidcDiscovery),
+            })
+        }
+    }
+
+    fn with_components(
+        kc_config: &KeycloakConfig,
+        client: reqwest::Client,
+        id: uuid::Uuid,
+        clock: Arc<dyn Clock>,
+        refresh_policy: RefreshPolicy,
+    ) -> Self {
+        let endpoint = OidcDiscoveryEndpoint::from_server_and_realm(
             kc_config.server.clone(),
             &kc_config.realm,
         );
-
-        let kc_server = kc_config.server.to_string();
-        let kc_realm = kc_config.realm.clone();
-
-        let discovery = Action::new(move |oidc_discovery_endpoint: &OidcDiscoveryEndpoint| {
-            let kc_server = kc_server.clone();
-            let kc_realm = kc_realm.clone();
-            let oidc_discovery_endpoint = oidc_discovery_endpoint.clone();
-
-            async move {
-                let span = tracing::span!(
-                    tracing::Level::INFO,
-                    "perform_oidc_discovery",
-                    kc_instance_id = ?id,
-                    kc_server,
-                    kc_realm,
-                    oidc_discovery_endpoint = ?oidc_discovery_endpoint.0.to_string()
-                );
-                perform_oidc_discovery(
-                    oidc_discovery_endpoint,
-                    kc_config.retry.0,
-                    std::time::Duration::from_secs(kc_config.retry.1),
-                )
-                .instrument(span)
-                .await
-            }
-        });
-
-        discovery.dispatch(oidc_discovery_endpoint.clone());
-
-        Self {
+        let op = default_discovery_op(
+            client,
             id,
-            config: kc_config,
-            oidc_discovery_endpoint,
-            discovery,
+            kc_config.server.to_string(),
+            kc_config.realm.clone(),
+            kc_config.retry,
+        );
+        Self {
+            discovery: Discovery::new(endpoint, op, id, clock, refresh_policy),
         }
     }
 
-    pub(crate) async fn perform_oidc_discovery(&self) {
-        // Wait for an ongoing discovery or dispatch a new discovery process.
-        if self.discovery.is_pending() {
-            self.discovery.notified().await;
-        } else {
-            self.discovery
-                .dispatch(self.oidc_discovery_endpoint.clone())
-                .await
-                .expect("No Join error");
-        }
+    /// Waits until initial OIDC discovery terminates, successfully or not.
+    ///
+    /// Call [`Self::is_operational`] or [`Self::operational_status`] afterward to inspect the
+    /// outcome. This method adds no timeout beyond those configured on the HTTP client.
+    pub async fn ready(&self) {
+        self.discovery.wait_for_completion(1).await;
     }
 
-    /// Returns true after a successful OIDC discovery.
+    /// Returns whether the instance currently has at least one usable decoding key.
+    ///
+    /// A failed refresh does not make an instance non-operational while a previously discovered
+    /// key set remains usable.
+    // Keep the public async API stable even though the published snapshot is now synchronous.
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     pub async fn is_operational(&self) -> bool {
+        self.discovery.is_operational()
+    }
+
+    /// Returns a point-in-time view of discovery and refresh state for health reporting.
+    // Keep the public async API stable even though refresh bookkeeping now uses a plain mutex.
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
+    pub async fn operational_status(&self) -> OperationalStatus {
+        self.discovery.operational_status()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_refresh_policy(
+        kc_config: &KeycloakConfig,
+        id: uuid::Uuid,
+        clock: Arc<dyn Clock>,
+        refresh_policy: RefreshPolicy,
+    ) -> Self {
+        Self::with_components(kc_config, default_http_client(), id, clock, refresh_policy)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn wait_for_discovery_completion(&self, expected_completion: usize) {
         self.discovery
-            .value()
-            .await
-            .as_ref()
-            .is_some_and(Result::is_ok)
+            .wait_for_completion(expected_completion)
+            .await;
     }
 
-    pub(crate) async fn decoding_keys(&self) -> DecodingKeys<'_> {
-        DecodingKeys {
-            // Note: Tokio's RwLock implementation prioritizes write access to prevent starvation. This is fine and will not block writes.
-            lock: self.discovery.value().await,
+    #[cfg(test)]
+    pub(crate) fn refresh_state_snapshot(&self) -> crate::discovery::RefreshStateSnapshot {
+        self.discovery.snapshot()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resolved_for_test(
+        config: KeycloakConfig,
+        data: crate::discovery::DiscoveredData,
+    ) -> Self {
+        let endpoint = OidcDiscoveryEndpoint::from_server_and_realm(config.server, &config.realm);
+        Self {
+            discovery: Discovery::resolved(endpoint, data),
         }
     }
 }
 
-pub(crate) struct DecodingKeys<'a> {
-    lock: RwLockReadGuard<'a, Option<Result<DiscoveredData, AuthError>>>,
-}
+impl KeySource for KeycloakAuthInstance {
+    fn decoding_keys(&self) -> DecodingKeys {
+        self.discovery.decoding_keys()
+    }
 
-impl DecodingKeys<'_> {
-    /// Iterate over the currently known decoding keys.
-    /// This may return an empty iterator if no keys are known!
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &jsonwebtoken::DecodingKey> {
-        self.lock
-            .as_ref()
-            .map(|r| r.as_ref())
-            .and_then(Result::ok)
-            .map(|d| d.decoding_keys.iter())
-            .unwrap_or_default()
+    async fn refresh_if_needed(&self, observed_generation: usize) -> bool {
+        self.discovery.refresh_if_needed(observed_generation).await
     }
 }
 
-async fn perform_oidc_discovery(
-    oidc_discovery_endpoint: OidcDiscoveryEndpoint,
-    num_retries: usize,
-    fixed_delay: StdDuration,
-) -> Result<DiscoveredData, AuthError> {
-    tracing::info!("Starting OIDC discovery.");
+#[cfg(test)]
+mod tests {
+    use assertr::prelude::*;
+    use jsonwebtoken::Algorithm;
 
-    // Load OIDC config.
-    let oidc_config = retry_async(async move || {
-        oidc_discovery::retrieve_oidc_config(oidc_discovery_endpoint.0.clone())
+    use crate::{
+        error::{AuthError, ConnectError},
+        test_support::{MockOidcServer, MockResponse, RSA_KEY_A, config_for},
+    };
+
+    use super::{KeycloakAuthInstance, KeycloakConfig};
+
+    #[tokio::test]
+    async fn connect_succeeds_and_reports_an_operational_status() {
+        let provider = MockOidcServer::start().await;
+        provider
+            .set_jwks(vec![RSA_KEY_A.jwk(Some("key-a"), Algorithm::RS256)])
+            .await;
+
+        let instance = KeycloakAuthInstance::connect(config_for(&provider))
             .await
-            .context(OidcDiscoverySnafu {})
-    })
-    .delayed_by(delay::Fixed::of(fixed_delay).take(num_retries))
-    .await
-    .inspect_err(|err| {
-        tracing::error!(
-            err = snafu::Report::from_error(err.clone()).to_string(),
-            "Could not retrieve OIDC config."
-        );
-    })?;
+            .expect("connect must succeed against a healthy provider");
 
-    // Parse JWK endpoint if OIDC config is available.
-    let jwk_set_endpoint = Url::parse(&oidc_config.standard_claims.jwks_uri)
-        .context(JwkEndpointSnafu {})
-        .inspect_err(|err| {
-            tracing::error!(
-                err = snafu::Report::from_error(err.clone()).to_string(),
-                "Could not retrieve jwk_set_endpoint_url."
+        assert_that!(instance.is_operational().await).is_true();
+        let status = instance.operational_status().await;
+        assert_that!(status.is_operational).is_true();
+        assert_that!(&status.time_since_last_success).is_some();
+        assert_that!(&status.time_since_last_attempt).is_some();
+        assert_that!(&status.last_error).is_none();
+        assert_that!(status.consecutive_failures).is_equal_to(0);
+    }
+
+    #[tokio::test]
+    async fn connect_rejects_a_server_url_that_cannot_be_a_base() {
+        let config = KeycloakConfig::builder()
+            .server(url::Url::parse("mailto:admin@example.com").expect("mailto URL must parse"))
+            .realm(String::from("test-realm"))
+            .build();
+
+        assert_that!(KeycloakAuthInstance::connect(config).await)
+            .is_matching(pattern!(Err(ConnectError::InvalidServerUrl)));
+    }
+
+    #[tokio::test]
+    async fn connect_reports_the_initial_discovery_error() {
+        let provider = MockOidcServer::start().await;
+        provider.make_discovery_unavailable().await;
+
+        let error = KeycloakAuthInstance::connect(config_for(&provider))
+            .await
+            .expect_err("connect must fail when the initial discovery fails");
+
+        assert_that!(error).is_matching(pattern!(ConnectError::InitialDiscovery {
+            source: AuthError::OidcDiscovery { .. }
+        }));
+    }
+
+    #[tokio::test]
+    async fn connect_rejects_initial_jwks_without_usable_keys() {
+        let unusable_jwk = serde_json::from_value(serde_json::json!({
+            "kty": "RSA",
+            "n": "not-valid-base64url!",
+            "e": "AQAB",
+            "kid": "broken",
+            "alg": "RS256",
+            "use": "sig"
+        }))
+        .expect("syntactically valid JWK fixture must deserialize");
+
+        for jwks in [Vec::new(), vec![unusable_jwk]] {
+            let provider = MockOidcServer::start().await;
+            provider.set_jwks(jwks).await;
+
+            assert_that!(KeycloakAuthInstance::connect(config_for(&provider)).await).is_matching(
+                pattern!(Err(ConnectError::InitialDiscovery {
+                    source: AuthError::NoDecodingKeys
+                })),
             );
-        })?;
+        }
+    }
 
-    // Load JWK set if endpoint was parsable.
-    let jwk_set = retry_async(async move || {
-        oidc_discovery::retrieve_jwk_set(jwk_set_endpoint.clone())
+    #[tokio::test]
+    async fn connect_rejects_a_discovery_document_missing_required_oidc_metadata() {
+        let provider = MockOidcServer::start().await;
+        provider
+            .set_discovery_response(MockResponse::json(&serde_json::json!({
+                "issuer": provider
+                    .server_url()
+                    .join("realms/test-realm")
+                    .expect("issuer URL must join"),
+                "jwks_uri": provider.jwks_url(),
+            })))
+            .await;
+
+        let error = KeycloakAuthInstance::connect(config_for(&provider))
             .await
-            .context(JwkSetDiscoverySnafu {})
-    })
-    .delayed_by(delay::Fixed::of(fixed_delay).take(num_retries))
-    .await
-    .inspect_err(|err| {
-        tracing::error!(
-            err = snafu::Report::from_error(err.clone()).to_string(),
-            "Could not retrieve jwk_set."
-        );
-    })?;
+            .expect_err("a discovery document violating the canonical OIDC contract must fail");
 
-    let num_keys = jwk_set.keys.len();
-    tracing::info!(
-        "Received new jwk_set containing {num_keys} {}.",
-        match num_keys {
-            1 => "key",
-            _ => "keys",
-        }
-    );
+        assert_that!(error).is_matching(pattern!(ConnectError::InitialDiscovery {
+            source: AuthError::OidcDiscovery { .. }
+        }));
+    }
 
-    // Create DecodingKey instances from received JWKs.
-    let decoding_keys = parse_jwks(&jwk_set);
+    #[tokio::test]
+    async fn ready_returns_once_the_initial_attempt_terminated() {
+        let provider = MockOidcServer::start().await;
+        provider.make_discovery_unavailable().await;
+        let instance = KeycloakAuthInstance::new(config_for(&provider));
 
-    Ok(DiscoveredData {
-        oidc_config,
-        jwk_set,
-        decoding_keys,
-    })
-}
+        tokio::time::timeout(std::time::Duration::from_secs(2), instance.ready())
+            .await
+            .expect("ready must return after the initial discovery attempt terminated");
 
-fn parse_jwks(jwk_set: &jsonwebtoken::jwk::JwkSet) -> Vec<jsonwebtoken::DecodingKey> {
-    jwk_set.keys.iter().filter_map(|jwk| {
-        match jsonwebtoken::DecodingKey::from_jwk(jwk) {
-            Ok(decoding_key) => Some(decoding_key),
-            Err(err) => {
-                tracing::error!(?err, "Received JWK from Keycloak which could not be parsed as a DecodingKey. Ignoring the JWK.");
-                None
-            }
-        }
-    }).collect::<Vec<_>>()
+        assert_that!(instance.is_operational().await).is_false();
+        let status = instance.operational_status().await;
+        assert_that!(status.is_operational).is_false();
+        assert_that!(&status.time_since_last_success).is_none();
+        assert_that!(&status.last_error).is_some();
+        assert_that!(status.consecutive_failures).is_equal_to(1);
+    }
+
+    #[tokio::test]
+    async fn empty_initial_jwks_is_non_operational_and_backed_off() {
+        let provider = MockOidcServer::start().await;
+        let instance = KeycloakAuthInstance::new(config_for(&provider));
+
+        instance.ready().await;
+
+        assert_that!(instance.is_operational().await).is_false();
+        let status = instance.operational_status().await;
+        assert_that!(status.is_operational).is_false();
+        assert_that!(&status.time_since_last_success).is_none();
+        assert_that!(status.last_error.as_deref())
+            .is_equal_to(Some("The provider returned no usable decoding keys"));
+        assert_that!(status.consecutive_failures).is_equal_to(1);
+        assert_that!(instance.refresh_state_snapshot().next_refresh_at).is_some();
+    }
 }

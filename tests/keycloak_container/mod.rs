@@ -8,8 +8,8 @@ use testcontainers::{
 };
 use url::Url;
 
-const KEYCLOAK_VERSION: &str = "26.7.1";
-const KEYCLOAK_QUARKUS_VERSION: &str = "3.33.2.1";
+const KEYCLOAK_VERSION: &str = "26.7.2";
+const KEYCLOAK_QUARKUS_VERSION: &str = "3.33.3.1";
 
 #[allow(dead_code)]
 pub struct KeycloakContainer {
@@ -29,7 +29,7 @@ impl KeycloakContainer {
         let admin_password = "admin".to_owned();
 
         // This setup is roughly equivalent to the following cli command:
-        // `podman run -p 8080:8080 -e KEYCLOAK_ADMIN=admin -e KEYCLOAK_ADMIN_PASSWORD=admin quay.io/keycloak/keycloak:26.7.1 start-dev`
+        // `podman run -p 8080:8080 -e KEYCLOAK_ADMIN=admin -e KEYCLOAK_ADMIN_PASSWORD=admin quay.io/keycloak/keycloak:26.7.2 start-dev`
 
         let keycloak_image = GenericImage::new("quay.io/keycloak/keycloak", KEYCLOAK_VERSION)
             .with_exposed_port(ContainerPort::Tcp(8080))
@@ -109,7 +109,7 @@ impl KeycloakContainer {
 
         let access_token = token.get(keycloak_url).await.unwrap();
 
-        tracing::info!(access_token, "Login successful.");
+        tracing::info!("Login successful.");
         access_token
     }
 }

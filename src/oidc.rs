@@ -87,7 +87,7 @@ pub struct OpenIDConnectFrontChannelLogoutDiscoveryClaims {
     /// If omitted, the default value is false.
     /// The sid (session ID) Claim used in ID Tokens and as a frontchannel_logout_uri parameter has the following definition:
     pub frontchannel_logout_session_supported: Option<bool>,
-    // Omitted the `sid` field. It would have to be defined in multiple places, so we simple added it to `OidcConfig` directly.
+    // Omitted the `sid` field. It would have to be defined in multiple places, so we simply added it to `OidcConfig` directly.
 }
 
 /// See: `https://openid.net/specs/openid-connect-backchannel-1_0.html#BCSupport`
@@ -101,7 +101,7 @@ pub struct OpenIDConnectBackChannelLogoutDiscoveryClaims {
     /// If supported, the sid Claim is also included in ID Tokens issued by the OP.
     /// If omitted, the default value is false.
     pub backchannel_logout_session_supported: Option<bool>,
-    // Omitted the `sid` field. It would have to be defined in multiple places, so we simple added it to `OidcConfig` directly.
+    // Omitted the `sid` field. It would have to be defined in multiple places, so we simply added it to `OidcConfig` directly.
 }
 
 /// See: `https://openid.net/specs/openid-connect-rpinitiated-1_0.html#OPMetadata`
@@ -109,7 +109,7 @@ pub struct OpenIDConnectBackChannelLogoutDiscoveryClaims {
 pub struct OpenIDConnectRPInitiatedLogoutClaims {
     /// REQUIRED. URL at the OP to which an RP can perform a redirect to request that the End-User be logged out at the OP.
     /// This URL MUST use the https scheme and MAY contain port, path, and query parameter components.
-    pub end_session_endpoint: Option<String>, // Note: Required, but we do not now if the extension is even used...
+    pub end_session_endpoint: Option<String>, // Note: Required, but we do not know if the extension is even used...
 }
 
 /// See: `https://openid.net/specs/oauth-v2-jarm.html#name-authorization-server-metada`
@@ -132,7 +132,7 @@ pub struct OidcDiscoverySessionDiscoveryClaims {
     /// This URL MUST use the https scheme and MAY contain port, path, and query parameter components.
     /// The page is loaded from an invisible iframe embedded in an RP page so that it can run in the OP's security context.
     /// It accepts postMessage requests from the relevant RP iframe and uses postMessage to post back the login status of the End-User at the OP.
-    pub check_session_iframe: Option<String>, // Note: Required, but we do not now if the extension is even used...
+    pub check_session_iframe: Option<String>, // Note: Required, but we do not know if the extension is even used...
 }
 
 /// See: `https://openid.net/specs/openid-connect-discovery-1_0.html#WellKnownContents`

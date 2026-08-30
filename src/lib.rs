@@ -1,261 +1,165 @@
-//! Protect axum routes with a JWT emitted by Keycloak.
+//! Authenticate Axum requests with access tokens issued by Keycloak.
 //!
-//! # Usage
+//! [`KeycloakAuthInstance`](instance::KeycloakAuthInstance) fetches and caches a realm's OIDC
+//! discovery document and JSON Web Key Set (JWKS). [`KeycloakAuthLayer`](layer::KeycloakAuthLayer)
+//! extracts a bearer token, verifies it, applies a
+//! [`ValidationPolicy`](validation::ValidationPolicy), and optionally enforces roles.
 //!
-//! This library provides the `KeycloakAuthInstance` which manages OIDC discovery and hold onto decoding keys
-//! and the `KeycloakAuthLayer`, a tower layer / service implementation that parses and validates incoming JWTs.
+//! # Example
 //!
-//! Let's set up a protected Axum route!
+//! ```rust,no_run
+//! use axum::{Extension, Router, routing::get};
+//! use axum_keycloak_auth::{
+//!     PassthroughMode, Url,
+//!     instance::{KeycloakAuthInstance, KeycloakConfig},
+//!     layer::KeycloakAuthLayer,
+//!     token::KeycloakToken,
+//!     validation::{Algorithm, ValidationPolicy},
+//! };
 //!
-//! To demonstrate the likely case of still requiring some (e.g. /health) public routes,
-//! let us define two functions to create the respective public and protected routers,
-//! adding a `KeycloakAuthLayer` only to the router whose routes should be protected.
-//!
-//! Specifying the `required_roles` is optional. If omitted, role-presence can be checked in each route-handler individually.
-//! The library will then only check that a request was performed with a valid JWT.
-//! Consider using this builder field if you have a long list of route-handlers
-//! which all require the same roles to be present.
-//!
-//! ```rust
-//! use std::sync::Arc;
-//! use axum::{http::StatusCode, response::{Response, IntoResponse}, routing::get, Extension, Router};
-//! use axum_keycloak_auth::{Url, error::AuthError, instance::KeycloakConfig, instance::KeycloakAuthInstance, layer::KeycloakAuthLayer, decode::KeycloakToken, PassthroughMode, expect_role};
-//!
-//! pub fn public_router() -> Router {
-//!     Router::new()
-//!         .route("/health", get(health))
+//! async fn protected(Extension(token): Extension<KeycloakToken<String>>) -> String {
+//!     format!("authenticated subject: {}", token.subject)
 //! }
 //!
-//! pub fn protected_router(instance: KeycloakAuthInstance) -> Router {
-//!     Router::new()
-//!         .route("/protected", get(protected))
-//!         .layer(
-//!              KeycloakAuthLayer::<String>::builder()
-//!                  .instance(instance)
-//!                  .passthrough_mode(PassthroughMode::Block)
-//!                  .persist_raw_claims(false)
-//!                  .expected_audiences(vec![String::from("account")])
-//!                  .required_roles(vec![String::from("administrator")])
-//!                  .build(),
-//!         )
-//! }
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let server = Url::parse("https://keycloak.example/")?;
+//!     let realm = "my-realm";
+//!     let instance = KeycloakAuthInstance::connect(
+//!         KeycloakConfig::builder()
+//!             .server(server.clone())
+//!             .realm(realm.to_owned())
+//!             .build(),
+//!     )
+//!     .await?;
+//!     let policy = ValidationPolicy::strict()
+//!         .expected_issuers(vec![format!("{server}realms/{realm}")])
+//!         .allowed_algorithms(vec![Algorithm::RS256])
+//!         .build()?;
 //!
-//! // You may have multiple routers that you want to see protected by a `KeycloakAuthLayer`.
-//! // You can safely attach new `KeycloakAuthLayer`s to different routers, but consider using only a single `KeycloakAuthInstance` for all of these layers.
-//! // Remember: The `KeycloakAuthInstance` manages the keys used to decode incoming JWTs and dynamically fetches them from your Keycloak server.
-//! // Having multiple instances simoultaniously would incease pressure on your Keycloak instance on service startup and unnecesssarily store duplicated data.
-//! // The `KeycloakAuthLayer` therefore really takes an `Arc<KeycloakAuthInstance>` in its `instance` method!
-//! // Presence of the `Into` trait in the `instance` methods argument let us hide that fact in the previous example.
-//!
-//! #[allow(dead_code)]
-//! pub fn protect(router:Router, instance: Arc<KeycloakAuthInstance>) -> Router {
-//!     router.layer(
+//!     let app: Router = Router::new().route("/protected", get(protected)).layer(
 //!         KeycloakAuthLayer::<String>::builder()
 //!             .instance(instance)
 //!             .passthrough_mode(PassthroughMode::Block)
-//!             .persist_raw_claims(false)
-//!             .expected_audiences(vec![String::from("account")])
-//!             .required_roles(vec![String::from("administrator")])
-//!             .build(),
-//!     )
-//! }
-//!
-//! // Lets also define the handlers ('health' and 'protected') defined in our routers.
-//!
-//! // The `health` handler can always be called without a JWT,
-//! // as we only attached an instance of the `KeycloakAuthLayer` to the protected router.
-//!
-//! // The `KeycloakAuthLayer` makes the parsed token data available using axum's `Extension`'s,
-//! // including the users roles, the uuid of the user, its name, email, ...
-//! // The `protected` handler will (in the default `PassthroughMode::Block` case) only be called
-//! // if the request contained a valid JWT which not already expired.
-//! // It may then access that data (as `KeycloakToken<YourRoleType>`) through an Extension
-//! // to get access to the decoded keycloak user information as shown below.
-//!
-//! pub async fn health() -> impl IntoResponse {
-//!     StatusCode::OK
-//! }
-//!
-//! pub async fn protected(Extension(token): Extension<KeycloakToken<String>>) -> Response {
-//!     expect_role!(&token, "administrator");
-//!
-//!     tracing::info!("Token payload is {token:#?}");
-//!
-//!     (
-//!         StatusCode::OK,
-//!         format!(
-//!             "Hello {name} ({subject}). Your token is valid for another {valid_for} seconds.",
-//!             name = token.extra.profile.preferred_username,
-//!             subject = token.subject,
-//!             valid_for = (token.expires_at - time::OffsetDateTime::now_utc()).whole_seconds()
-//!         ),
-//!     ).into_response()
-//! }
-//!
-//! // You can construct a `KeycloakAuthInstance` using a single value of type `KeycloakConfig`, which is constructed using the builder pattern.
-//! // You may want to immediately wrap it inside an `Arc` if you intend to pass it to multiple `KeycloakAuthLayer`s. We are not doing this in this example.
-//!
-//! // Your final router can be created by merging the public and protected routers.
-//!
-//! #[tokio::main]
-//! async fn main() {
-//!     let keycloak_auth_instance = KeycloakAuthInstance::new(
-//!         KeycloakConfig::builder()
-//!             .server(Url::parse("https://localhost:8443/").unwrap())
-//!             .realm(String::from("MyRealm"))
+//!             .expected_audiences(vec!["my-api".to_owned()])
+//!             .validation_policy(policy)
 //!             .build(),
 //!     );
-//!     let router = public_router().merge(protected_router(keycloak_auth_instance));
-//!
-//!     // let addr_and_port = String::from("0.0.0.0:8080");
-//!     // let socket_addr: std::net::SocketAddr = addr_and_port.parse().unwrap();
-//!     // println!("Listening on: {}", addr_and_port);
-//!
-//!     // let tcp_listener = tokio::net::TcpListener::bind(socket_addr).await.unwrap();
-//!     // axum::serve(tcp_listener, router.into_make_service()).await.unwrap();
+//!     # let _ = app;
+//!     Ok(())
 //! }
 //! ```
 //!
-//! # Using a custom role type
+//! Apply the layer only to protected routes. Share one `KeycloakAuthInstance` across layers so
+//! they use one key cache and one refresh coordinator.
 //!
-//! You probably noticed a generic `<String>` when creating the `KeycloakAuthLayer` and defining the handler extension.
+//! # Authentication result
 //!
-//! This is the type representing a single role and can be replaced with any type implementing the `axum_keycloak_auth::role::Role` trait.
+//! [`PassthroughMode::Block`] is the default. It rejects failed authentication and inserts a
+//! [`KeycloakToken`](token::KeycloakToken) extension after successful authentication.
+//! [`PassthroughMode::Pass`] always calls the inner service and inserts a [`KeycloakAuthStatus`]
+//! extension containing either the token or the authentication error.
 //!
-//! You could for example create an enum containing all your known roles as variants with a special variant for unknown role names.
+//! Use [`KeycloakAuthLayer::required_roles`](layer::KeycloakAuthLayer::required_roles) for roles
+//! shared by every route under a layer. For per-handler checks, use the methods on
+//! [`role::ExpectRoles`] or the role-checking macros. Use `String` for untyped role names, or
+//! implement [`role::Role`] to parse them into an application-specific type.
 //!
-//! ```rust
-//! #[derive(Debug, PartialEq, Eq, Clone)]
-//! pub enum Role {
-//!     Administrator,
-//!     Unknown(String),
-//! }
+//! # Validation
 //!
-//! impl axum_keycloak_auth::role::Role for Role {}
+//! The default [`ValidationPolicy::legacy`](validation::ValidationPolicy::legacy) preset preserves
+//! the validation behavior of earlier releases. For new deployments,
+//! [`ValidationPolicy::strict`](validation::ValidationPolicy::strict) requires issuer and audience
+//! checks, restricts signature algorithms, requires a `Bearer` payload token type, and validates
+//! `nbf` and future `iat` values. See [`validation`] for the exact preset behavior.
 //!
-//! impl std::fmt::Display for Role {
-//!     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//!         match self {
-//!             Role::Administrator => f.write_str("Administrator"),
-//!             Role::Unknown(unknown) => f.write_fmt(format_args!("Unknown role: {unknown}")),
-//!         }
-//!     }
-//! }
+//! [`KeycloakAuthLayer::validate_raw_token`](layer::KeycloakAuthLayer::validate_raw_token) applies
+//! the same validation outside the middleware.
 //!
-//! impl From<String> for Role {
-//!     fn from(value: String) -> Self {
-//!         match value.as_ref() {
-//!             "administrator" => Role::Administrator,
-//!             _ => Role::Unknown(value),
-//!         }
-//!     }
-//! }
+//! # Token extraction
 //!
-//! // You could then (remember to update both locations of the generic type) check for roles using your enum:
+//! By default, the layer reads `Authorization: Bearer <token>`. Configure
+//! [`KeycloakAuthLayer::token_extractors`](layer::KeycloakAuthLayer::token_extractors) to use
+//! multiple or custom [`TokenExtractor`](extract::TokenExtractor) implementations. Extractors run
+//! in order, and the first token found is validated. An absent credential source always falls
+//! through. The default
+//! [`TokenExtractionErrorPolicy::Fallback`](extract::TokenExtractionErrorPolicy::Fallback) also
+//! ignores unusable sources for compatibility, while
+//! [`TokenExtractionErrorPolicy::Reject`](extract::TokenExtractionErrorPolicy::Reject) rejects the
+//! first unusable source.
 //!
-//! use axum::{http::StatusCode, response::{Response, IntoResponse}, Extension};
-//! use axum_keycloak_auth::{decode::KeycloakToken, expect_role};
+//! [`QueryParamTokenExtractor`](extract::QueryParamTokenExtractor) reads tokens from URLs, where
+//! they can leak through browser history, referrer headers, and request logs.
 //!
-//! pub async fn protected(Extension(token): Extension<KeycloakToken<Role>>) -> Response {
-//!     expect_role!(&token, Role::Administrator);
-//!     StatusCode::OK.into_response()
-//! }
-//! ```
+//! # Key discovery and refresh
 //!
-//! # Passthrough modes
+//! [`KeycloakAuthInstance::connect`](instance::KeycloakAuthInstance::connect) waits for initial
+//! discovery and returns an error if it fails.
+//! [`KeycloakAuthInstance::new`](instance::KeycloakAuthInstance::new) starts discovery in the
+//! background instead.
 //!
-//! The `KeycloakAuthLayer` provides a `passthrough_mode` field, allowing you to choose between the following modes:
-//!
-//! - `PassthroughMode::Block`: Immediately return an error-response should authentication fail. This is the preferred mode and the default if omitted.
-//! - `PassthroughMode::Pass`: Always store a `KeycloakAuthStatus` containing the authentication result and defer the response generation to the handler or any deeper layers. You may want to use this mode i fine-grained error handling is required or you want to use additional layers which could still prove the user authenticated.
-//!
-//! # Using custom token extractors
-//!
-//! By default, request headers are checked for presence of an "authorization" header,
-//! which is expected to contain the typical "`Bearer <token>`" string.
-//!
-//! You have the ability to change this behavior to your liking through use of the `TokenExtractor` trait,
-//! which allows for customized strategies on how to retrieve the token from an axum request.
-//!
-//! The `token_extractors` field on the `KeycloakAuthLayer` builder accepts a non-empty vec of extractors.
-//!
-//! ```rust,no_run
-//! use std::sync::Arc;
-//! use axum_keycloak_auth::{
-//!     NonEmpty, PassthroughMode,
-//!     instance::KeycloakAuthInstance,
-//!     layer::KeycloakAuthLayer,
-//!     extract::{AuthHeaderTokenExtractor, QueryParamTokenExtractor, TokenExtractor}
-//! };
-//!
-//! let instance: KeycloakAuthInstance = todo!();
-//!
-//! let layer = KeycloakAuthLayer::<String>::builder()
-//!     .instance(instance)
-//!     .passthrough_mode(PassthroughMode::Block)
-//!     .expected_audiences(vec![String::from("account")])
-//!     // ...
-//!     .token_extractors(NonEmpty::<Arc<dyn TokenExtractor>> {
-//!         head: Arc::new(AuthHeaderTokenExtractor::default()),
-//!         tail: vec![
-//!             Arc::new(QueryParamTokenExtractor::default()),
-//!             Arc::new(QueryParamTokenExtractor::extracting_key("jwt")),
-//!         ],
-//!     })
-//!     .build();
-//! ```
-//!
-//! Extractors are called in order of their definition in the `token_extractors` vec.
-//! The token from the first extractor able to successfully extract one is used to further validate the request.
-//! Other extractors are no longer considered.
-//!
-//! This crate implements two extraction strategies:
-//!   - `AuthHeaderTokenExtractor`: Extracts the token from the `http::header::AUTHORIZATION` header.
-//!   - `QueryParamTokenExtractor`: Extracts the token from a query parameter (by default named "token"). Use with caution!
-//!
-//! By default, when not explicitly setting `token_extractors`, a single `AuthHeaderTokenExtractor::default()` is used.
-//!
+//! Validation may request an on-demand refresh when no usable keys are cached or when no cached
+//! key can verify a token with an unknown `kid`. Refreshes are shared and rate-limited, and the
+//! last usable key set remains available after a provider failure. There is no periodic refresh.
+//! A removed key remains trusted until another refresh replaces the set or the process restarts.
+//! Changed key material under an existing `kid` does not itself trigger a refresh, so publish
+//! rotated keys under a new `kid`. Use
+//! [`KeycloakAuthInstance::operational_status`](instance::KeycloakAuthInstance::operational_status)
+//! for health reporting.
 
 #![forbid(unsafe_code)]
-//#![warn(missing_docs)]
+#![warn(missing_docs)]
 #![deny(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
 use role::Role;
 
-mod action;
+mod clock;
+#[deprecated(
+    note = "Moved to `token` and `validation`. This alias module will be removed in the next breaking release."
+)]
 pub mod decode;
+mod discovery;
 pub mod error;
 pub mod extract;
+mod http;
 pub mod instance;
 pub mod layer;
+#[allow(missing_docs)]
 pub mod oidc;
 pub mod oidc_discovery;
 pub mod role;
 pub mod service;
+pub mod token;
+pub mod validation;
 
-// Re-export the Url struct used when configuring a `KeycloakAuthInstance`.
+#[cfg(test)]
+mod test_support;
+
+/// URL type used by [`instance::KeycloakConfig`].
 pub use url::Url;
 
-// Re-export the NonEmpty struct used when configuring a `KeycloakAuthLayer`.
+/// Non-empty collection type used for configured token extractors.
 pub use nonempty::NonEmpty;
 
 use serde::de::DeserializeOwned;
 
-/// The mode in which the authentication middleware may operate in.
-///
-/// ```PassthroughMode::Block```: Immediately return a `Response` if authentication failed.
-/// On successful authentication, the parsed token content is stored as an axum extension as a `KeycloakToken`.
-///
-/// ```PassthroughMode::Pass```:  Forward to the response handler regardless of whether there was an authentication failure.
-/// In this mode, the authentication status is stored as an axum extension as a `KeycloakAuthStatus`.
+/// Controls whether failed authentication stops the request.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum PassthroughMode {
+    /// Reject failed authentication. On success, insert a
+    /// [`token::KeycloakToken`] request extension and call the inner service.
     Block,
+
+    /// Always call the inner service and insert a [`KeycloakAuthStatus`] request extension with
+    /// the authentication result.
     Pass,
 }
 
+/// Authentication result inserted as a request extension in [`PassthroughMode::Pass`].
+///
+/// `R` and `Extra` must match the role and additional-claims types configured on the layer.
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum KeycloakAuthStatus<R, Extra>
@@ -263,7 +167,10 @@ where
     R: Role,
     Extra: DeserializeOwned + Clone,
 {
-    // This variant is fairly large, but probably used most of the time. Leaving this non-boxed results in one less allocation each request.
-    Success(decode::KeycloakToken<R, Extra>),
+    /// Authentication succeeded with the validated token.
+    // Keep the common variant inline to avoid one allocation per authenticated request.
+    Success(token::KeycloakToken<R, Extra>),
+
+    /// Authentication failed with the detailed error.
     Failure(Arc<error::AuthError>),
 }

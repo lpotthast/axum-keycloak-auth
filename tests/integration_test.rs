@@ -59,7 +59,7 @@ async fn test_integration() {
 
     assert_that!(am_i_authenticated_response.status()).is_equal_to(StatusCode::OK);
     assert_that!(am_i_authenticated_response.text().await)
-        .is_ok()
+        .get_ok()
         .is_equal_to("You are not authenticated.");
 
     let who_am_i_response = Client::new()
@@ -90,7 +90,7 @@ async fn test_integration() {
 
     assert_that!(am_i_authenticated_response.status()).is_equal_to(StatusCode::OK);
     assert_that!(am_i_authenticated_response.text().await)
-        .is_ok()
+        .get_ok()
         .is_equal_to("You are authenticated.");
 
     be_jh.abort();

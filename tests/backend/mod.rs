@@ -5,9 +5,9 @@ use axum::{
 };
 use axum_keycloak_auth::{
     KeycloakAuthStatus, PassthroughMode,
-    decode::KeycloakToken,
     instance::{KeycloakAuthInstance, KeycloakConfig},
     layer::KeycloakAuthLayer,
+    token::KeycloakToken,
 };
 use http::StatusCode;
 use serde::Serialize;
@@ -32,6 +32,12 @@ pub async fn start_axum_backend(keycloak_url: Url, realm: String) -> JoinHandle<
                 .passthrough_mode(PassthroughMode::Block)
                 .expected_audiences(vec![String::from("account")])
                 .persist_raw_claims(false)
+                .dangerously_log_unverified_jwt_header(UnverifiedJwtHeaderLogging::Complete(
+                    tracing::Level::DEBUG,
+                ))
+                .dangerously_log_raw_claims(tracing::Level::DEBUG)
+                .dangerously_log_token_extraction_errors(tracing::Level::DEBUG)
+                .dangerously_log_authentication_errors(tracing::Level::WARN)
                 .build(),
         );
 
@@ -47,6 +53,12 @@ pub async fn start_axum_backend(keycloak_url: Url, realm: String) -> JoinHandle<
                 .passthrough_mode(PassthroughMode::Pass)
                 .expected_audiences(vec![String::from("account")])
                 .persist_raw_claims(false)
+                .dangerously_log_unverified_jwt_header(UnverifiedJwtHeaderLogging::Complete(
+                    tracing::Level::DEBUG,
+                ))
+                .dangerously_log_raw_claims(tracing::Level::DEBUG)
+                .dangerously_log_token_extraction_errors(tracing::Level::DEBUG)
+                .dangerously_log_authentication_errors(tracing::Level::WARN)
                 .build(),
         );
 
@@ -98,7 +110,8 @@ pub async fn am_i_authenticated(
     }
 }
 
-use axum_keycloak_auth::decode::ProfileAndEmail;
+use axum_keycloak_auth::layer::UnverifiedJwtHeaderLogging;
+use axum_keycloak_auth::token::ProfileAndEmail;
 use std::fmt::Display;
 use std::sync::Arc;
 

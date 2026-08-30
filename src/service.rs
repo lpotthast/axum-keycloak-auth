@@ -1,3 +1,5 @@
+//! Tower service produced by [`crate::layer::KeycloakAuthLayer`].
+
 use std::{
     sync::Arc,
     task::{Context, Poll},
@@ -6,13 +8,52 @@ use std::{
 use axum::{body::Body, response::IntoResponse};
 use futures::future::BoxFuture;
 use http::Request;
+use nonempty::NonEmpty;
 use serde::de::DeserializeOwned;
 
 use crate::{
-    KeycloakAuthStatus, PassthroughMode, error::AuthError, extract, layer::KeycloakAuthLayer,
+    KeycloakAuthStatus, PassthroughMode,
+    error::AuthError,
+    extract::{self, TokenExtractionErrorPolicy, TokenExtractor},
+    layer::KeycloakAuthLayer,
     role::Role,
+    validation::Validator,
 };
 
+fn log_authentication_error(level: tracing::Level, error: &AuthError) {
+    macro_rules! log_at_configured_level {
+        ($level:ident) => {
+            match error {
+                AuthError::MissingExpectedRole { role } => {
+                    tracing::event!(
+                        tracing::Level::$level,
+                        error = %error,
+                        missing_role = %role,
+                        "Authentication failed"
+                    );
+                }
+                _ => tracing::event!(
+                    tracing::Level::$level,
+                    error = %error,
+                    "Authentication failed"
+                ),
+            }
+        };
+    }
+
+    match level {
+        tracing::Level::ERROR => log_at_configured_level!(ERROR),
+        tracing::Level::WARN => log_at_configured_level!(WARN),
+        tracing::Level::INFO => log_at_configured_level!(INFO),
+        tracing::Level::DEBUG => log_at_configured_level!(DEBUG),
+        tracing::Level::TRACE => log_at_configured_level!(TRACE),
+    }
+}
+
+/// Tower service that extracts and validates a token before calling an inner service.
+///
+/// Applications normally construct this through [`tower::Layer::layer`] on a
+/// [`KeycloakAuthLayer`].
 #[derive(Clone)]
 pub struct KeycloakAuthService<S, R, Extra>
 where
@@ -20,7 +61,12 @@ where
     Extra: DeserializeOwned + Clone,
 {
     inner: S,
-    layer: KeycloakAuthLayer<R, Extra>,
+    validator: Arc<Validator<R, Extra>>,
+    token_extractors: Arc<NonEmpty<Arc<dyn TokenExtractor>>>,
+    token_extraction_error_policy: TokenExtractionErrorPolicy,
+    passthrough_mode: PassthroughMode,
+    authentication_error_log_level: Option<tracing::Level>,
+    token_extraction_error_log_level: Option<tracing::Level>,
 }
 
 impl<S, R, Extra> KeycloakAuthService<S, R, Extra>
@@ -28,10 +74,16 @@ where
     R: Role,
     Extra: DeserializeOwned + Clone,
 {
+    /// Wraps `inner` using a snapshot of `layer`'s current configuration.
     pub fn new(inner: S, layer: &KeycloakAuthLayer<R, Extra>) -> Self {
         Self {
             inner,
-            layer: layer.clone(),
+            validator: Arc::new(layer.validator()),
+            token_extractors: Arc::new(layer.token_extractors.clone()),
+            token_extraction_error_policy: layer.token_extraction_error_policy,
+            passthrough_mode: layer.passthrough_mode,
+            authentication_error_log_level: layer.dangerously_log_authentication_errors,
+            token_extraction_error_log_level: layer.dangerously_log_token_extraction_errors,
         }
     }
 }
@@ -48,77 +100,349 @@ where
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        // Once ready, we shall always be ready, independent of future discovery requests,
-        // satisfying a `poll_ready` requirement!
-        let is_ready = self.layer.instance.discovery.version() > 0;
-
-        if is_ready {
-            tracing::debug!("Ready to process requests.");
-        } else {
-            tracing::debug!("Not ready to process requests. Waiting for initial discovery...");
-
-            // We have to assume that the discovery action was initialized.
-            // Our waker handling in would otherwise be wrong!
-            assert!(self.layer.instance.discovery.is_pending());
-            let instance = self.layer.instance.clone();
-            let waker = cx.waker().clone();
-            tokio::spawn(async move {
-                instance.discovery.notified().await;
-                waker.wake();
-            });
-        }
-
-        match (is_ready, self.inner.poll_ready(cx)) {
-            (true, Poll::Ready(t)) => Poll::Ready(t),
-            (false, _) | (_, Poll::Pending) => Poll::Pending,
-        }
+        // Readiness deliberately does not wait for OIDC discovery: requests that need decoding
+        // keys block inside `call` until the initial discovery terminated (see
+        // `Discovery::refresh_if_needed`), and requests that are rejected without keys (for
+        // example on a missing token) do not need discovery at all.
+        self.inner.poll_ready(cx)
     }
 
     fn call(&mut self, mut request: Request<Body>) -> Self::Future {
         tracing::debug!("Validating request...");
 
         let clone = self.inner.clone();
-        let cloned_layer = self.layer.clone();
 
         // Take the service that was ready!
         let mut inner = std::mem::replace(&mut self.inner, clone);
 
-        let passthrough_mode = cloned_layer.passthrough_mode;
+        let validator = self.validator.clone();
+        let token_extractors = self.token_extractors.clone();
+        let token_extraction_error_policy = self.token_extraction_error_policy;
+        let passthrough_mode = self.passthrough_mode;
+        let authentication_error_log_level = self.authentication_error_log_level;
+        let token_extraction_error_log_level = self.token_extraction_error_log_level;
 
         Box::pin(async move {
             // Process the request.
-            let result = match extract::extract_jwt(&request, &cloned_layer.token_extractors) {
-                Some(token) => cloned_layer.validate_raw_token(&token).await,
-                None => Err(AuthError::MissingToken),
+            let result = match extract::extract_jwt(
+                &request,
+                &token_extractors,
+                token_extraction_error_policy,
+                token_extraction_error_log_level,
+            ) {
+                Ok(Some(token)) => validator.validate(&token).await,
+                Ok(None) => Err(AuthError::MissingToken),
+                Err(error) => Err(error),
             };
 
             match result {
-                Ok((raw_claims, keycloak_token)) => {
-                    if let Some(raw_claims) = raw_claims {
+                Ok(validated) => {
+                    if let Some(raw_claims) = validated.raw_claims {
                         request.extensions_mut().insert(raw_claims);
                     }
-                    match cloned_layer.passthrough_mode {
+                    match passthrough_mode {
                         PassthroughMode::Block => {
-                            request.extensions_mut().insert(keycloak_token);
+                            request.extensions_mut().insert(validated.token);
                         }
                         PassthroughMode::Pass => {
                             request
                                 .extensions_mut()
-                                .insert(KeycloakAuthStatus::<R, Extra>::Success(keycloak_token));
+                                .insert(KeycloakAuthStatus::<R, Extra>::Success(validated.token));
                         }
                     }
                     inner.call(request).await
                 }
-                Err(err) => match passthrough_mode {
-                    PassthroughMode::Block => Ok(err.into_response()),
-                    PassthroughMode::Pass => {
-                        request
-                            .extensions_mut()
-                            .insert(KeycloakAuthStatus::<R, Extra>::Failure(Arc::new(err)));
-                        inner.call(request).await
+                Err(err) => {
+                    if let Some(level) = authentication_error_log_level {
+                        log_authentication_error(level, &err);
                     }
-                },
+
+                    match passthrough_mode {
+                        PassthroughMode::Block => Ok(err.into_response()),
+                        PassthroughMode::Pass => {
+                            request
+                                .extensions_mut()
+                                .insert(KeycloakAuthStatus::<R, Extra>::Failure(Arc::new(err)));
+                            inner.call(request).await
+                        }
+                    }
+                }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{convert::Infallible, sync::Arc};
+
+    use assertr::prelude::*;
+    use axum::{
+        body::{Body, to_bytes},
+        http::{
+            Request, StatusCode,
+            header::{AUTHORIZATION, WWW_AUTHENTICATE},
+        },
+        response::IntoResponse,
+    };
+    use jsonwebtoken::Algorithm;
+    use serde_json::{Value, json};
+    use tower::Service;
+
+    use crate::{
+        PassthroughMode,
+        layer::KeycloakAuthLayer,
+        test_support::{
+            CapturedLogs, ManualClock, RSA_KEY_A, keycloak_claims, offline_instance,
+            validation_time,
+        },
+    };
+
+    use super::KeycloakAuthService;
+
+    #[tokio::test]
+    async fn authentication_error_logging_is_opt_in_and_uses_the_configured_level() {
+        for (authentication_error_log_level, passthrough_mode) in [
+            (None, PassthroughMode::Block),
+            (Some(tracing::Level::WARN), PassthroughMode::Block),
+            (Some(tracing::Level::INFO), PassthroughMode::Block),
+            (Some(tracing::Level::WARN), PassthroughMode::Pass),
+        ] {
+            let now = validation_time();
+            let mut layer = KeycloakAuthLayer::<String, Value>::builder()
+                .instance(offline_instance(
+                    url::Url::parse("https://issuer.example/")
+                        .expect("the test issuer URL must parse"),
+                    String::from("test-realm"),
+                ))
+                .passthrough_mode(passthrough_mode)
+                .expected_audiences(vec![String::from("account")])
+                .build()
+                .with_clock(Arc::new(ManualClock::new(now)));
+            layer.dangerously_log_authentication_errors = authentication_error_log_level;
+            let inner = tower::service_fn(|_request: Request<Body>| async {
+                Ok::<_, Infallible>(StatusCode::NO_CONTENT.into_response())
+            });
+            let mut service = KeycloakAuthService::new(inner, &layer);
+
+            let mut claims = keycloak_claims(now);
+            claims.insert(String::from("exp"), json!(now.unix_timestamp() - 60));
+            claims.insert(String::from("iat"), json!({ "malformed": true }));
+            let token = RSA_KEY_A
+                .sign(&claims, Algorithm::RS256, Some("key-a"))
+                .expect("the malformed-claims test token must sign");
+            let request = Request::builder()
+                .header(AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .expect("the test request must build");
+
+            let logs = CapturedLogs::default();
+            let subscriber = tracing_subscriber::fmt()
+                .without_time()
+                .with_ansi(false)
+                .with_max_level(tracing::Level::TRACE)
+                .with_writer(logs.clone())
+                .finish();
+            let response = {
+                let _default = tracing::subscriber::set_default(subscriber);
+                service
+                    .call(request)
+                    .await
+                    .expect("authentication middleware must not fail as a service")
+            };
+
+            match passthrough_mode {
+                PassthroughMode::Block => {
+                    assert_that!(response.status()).is_equal_to(StatusCode::UNAUTHORIZED);
+                    assert_that!(
+                        response
+                            .headers()
+                            .get(WWW_AUTHENTICATE)
+                            .expect("an invalid token response must carry a Bearer challenge")
+                            .to_str()
+                            .expect("the Bearer challenge must be valid ASCII")
+                    )
+                    .is_equal_to("Bearer error=\"invalid_token\"");
+                    let body = to_bytes(response.into_body(), 1024)
+                        .await
+                        .expect("the JSON response body must be readable");
+                    let body =
+                        std::str::from_utf8(&body).expect("the JSON response body must be UTF-8");
+                    assert_that!(body).is_equal_to(r#"{"error":"invalid_token"}"#);
+                }
+                PassthroughMode::Pass => {
+                    assert_that!(response.status()).is_equal_to(StatusCode::NO_CONTENT);
+                }
+            }
+
+            let contents = logs.contents();
+            let enabled = authentication_error_log_level.is_some();
+            assert_that!(contents.contains("Authentication failed"))
+                .with_subject_name(format!(
+                    "authentication error logging enabled = {enabled}, mode = {passthrough_mode:?}"
+                ))
+                .is_equal_to(enabled);
+            assert_that!(contents.contains("invalid type: map, expected i64"))
+                .with_subject_name(format!("detailed error logging enabled = {enabled}"))
+                .is_equal_to(enabled);
+            if let Some(level) = authentication_error_log_level {
+                assert_that!(contents.as_str())
+                    .with_subject_name("configured authentication error log level")
+                    .contains(level.as_str());
+            }
+            assert_that!(contents.contains(&token))
+                .with_subject_name("the raw token is never logged")
+                .is_false();
+            assert_that!(contents.contains("test@example.com"))
+                .with_subject_name("unrelated claims are never logged")
+                .is_false();
+        }
+    }
+
+    #[tokio::test]
+    async fn authentication_error_logging_hints_at_the_missing_role_only_when_enabled() {
+        const MISSING_ROLE: &str = "sensitive-administrator-role";
+
+        for authentication_error_log_level in [None, Some(tracing::Level::DEBUG)] {
+            let now = validation_time();
+            let mut layer = KeycloakAuthLayer::<String, Value>::builder()
+                .instance(offline_instance(
+                    url::Url::parse("https://issuer.example/")
+                        .expect("the test issuer URL must parse"),
+                    String::from("test-realm"),
+                ))
+                .expected_audiences(vec![String::from("account")])
+                .required_roles(vec![String::from(MISSING_ROLE)])
+                .build()
+                .with_clock(Arc::new(ManualClock::new(now)));
+            layer.dangerously_log_authentication_errors = authentication_error_log_level;
+            let inner = tower::service_fn(|_request: Request<Body>| async {
+                Ok::<_, Infallible>(StatusCode::NO_CONTENT.into_response())
+            });
+            let mut service = KeycloakAuthService::new(inner, &layer);
+            let token = RSA_KEY_A
+                .sign(&keycloak_claims(now), Algorithm::RS256, Some("key-a"))
+                .expect("the missing-role test token must sign");
+            let request = Request::builder()
+                .header(AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .expect("the test request must build");
+            let logs = CapturedLogs::default();
+            let subscriber = tracing_subscriber::fmt()
+                .without_time()
+                .with_ansi(false)
+                .with_max_level(tracing::Level::TRACE)
+                .with_writer(logs.clone())
+                .finish();
+
+            let response = {
+                let _default = tracing::subscriber::set_default(subscriber);
+                service
+                    .call(request)
+                    .await
+                    .expect("authentication middleware must not fail as a service")
+            };
+
+            assert_that!(response.status()).is_equal_to(StatusCode::FORBIDDEN);
+            let body = to_bytes(response.into_body(), 1024)
+                .await
+                .expect("the JSON response body must be readable");
+            let body = std::str::from_utf8(&body).expect("the JSON response body must be UTF-8");
+            assert_that!(body).is_equal_to(r#"{"error":"Missing expected role"}"#);
+            assert_that!(body).does_not_contain(MISSING_ROLE);
+
+            let contents = logs.contents();
+            let enabled = authentication_error_log_level.is_some();
+            assert_that!(contents.contains("Authentication failed"))
+                .with_subject_name("missing-role authentication error event")
+                .is_equal_to(enabled);
+            assert_that!(contents.contains(&format!("missing_role={MISSING_ROLE}")))
+                .with_subject_name("structured missing-role hint")
+                .is_equal_to(enabled);
+            assert_that!(contents.contains(&token))
+                .with_subject_name("the raw token is never logged")
+                .is_false();
+        }
+    }
+
+    #[tokio::test]
+    async fn token_extraction_and_final_authentication_error_logging_are_independent() {
+        for (token_extraction_error_log_level, authentication_error_log_level) in [
+            (None, None),
+            (Some(tracing::Level::INFO), None),
+            (None, Some(tracing::Level::WARN)),
+            (Some(tracing::Level::INFO), Some(tracing::Level::WARN)),
+        ] {
+            let mut layer = KeycloakAuthLayer::<String, Value>::builder()
+                .instance(offline_instance(
+                    url::Url::parse("https://issuer.example/")
+                        .expect("the test issuer URL must parse"),
+                    String::from("test-realm"),
+                ))
+                .expected_audiences(vec![String::from("account")])
+                .build();
+            layer.dangerously_log_token_extraction_errors = token_extraction_error_log_level;
+            layer.dangerously_log_authentication_errors = authentication_error_log_level;
+            let inner = tower::service_fn(|_request: Request<Body>| async {
+                Ok::<_, Infallible>(StatusCode::NO_CONTENT.into_response())
+            });
+            let mut service = KeycloakAuthService::new(inner, &layer);
+            let request = Request::builder()
+                .body(Body::empty())
+                .expect("the test request must build");
+            let logs = CapturedLogs::default();
+            let subscriber = tracing_subscriber::fmt()
+                .without_time()
+                .with_ansi(false)
+                .with_max_level(tracing::Level::TRACE)
+                .with_writer(logs.clone())
+                .finish();
+
+            let response = {
+                let _default = tracing::subscriber::set_default(subscriber);
+                service
+                    .call(request)
+                    .await
+                    .expect("authentication middleware must not fail as a service")
+            };
+
+            assert_that!(response.status()).is_equal_to(StatusCode::UNAUTHORIZED);
+            let contents = logs.contents();
+            let extraction_logging_enabled = token_extraction_error_log_level.is_some();
+            let authentication_logging_enabled = authentication_error_log_level.is_some();
+            assert_that!(contents.contains("Token extractor failed."))
+                .with_subject_name("per-extractor error event")
+                .is_equal_to(extraction_logging_enabled);
+            assert_that!(
+                contents.contains("The 'Authorization' header was not present on a request.")
+            )
+            .with_subject_name("per-extractor error details")
+            .is_equal_to(extraction_logging_enabled);
+            assert_that!(contents.contains("Authentication failed"))
+                .with_subject_name("final authentication error event")
+                .is_equal_to(authentication_logging_enabled);
+            assert_that!(contents.contains("No JWT could be extracted from the request."))
+                .with_subject_name("final authentication error details")
+                .is_equal_to(authentication_logging_enabled);
+
+            if extraction_logging_enabled {
+                let event = contents
+                    .lines()
+                    .find(|line| line.contains("Token extractor failed."))
+                    .expect("enabled extraction-error logging must emit its event");
+                assert_that!(event)
+                    .with_subject_name("configured token-extraction error log level")
+                    .contains(tracing::Level::INFO.as_str());
+            }
+            if authentication_logging_enabled {
+                let event = contents
+                    .lines()
+                    .find(|line| line.contains("Authentication failed"))
+                    .expect("enabled authentication-error logging must emit its event");
+                assert_that!(event)
+                    .with_subject_name("configured authentication error log level")
+                    .contains(tracing::Level::WARN.as_str());
+            }
+        }
     }
 }

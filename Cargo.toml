@@ -1,6 +1,6 @@
 [package]
 name = "axum-keycloak-auth"
-version = "0.8.3"
+version = "0.8.4"
 edition = "2024"
 rust-version = "1.89.0"
 authors = ["Lukas Potthast <privat@lukas-potthast.de>"]
@@ -14,7 +14,16 @@ Protect axum routes with a JWT emitted by Keycloak.
 """
 categories = ["authentication", "web-programming"]
 keywords = ["keycloak", "auth", "jwt", "oidc", "axum"]
-exclude = ["/.idea/", "/.vscode/", "/.github/", "/AGENTS.md", "/Justfile"]
+exclude = [
+    "/.idea/",
+    "/.vscode/",
+    "/.github/",
+    "/.claude/",
+    "/AGENTS.md",
+    "/CLAUDE.md",
+    "/Justfile",
+    "/TODO.md",
+]
 
 [features]
 default = [
@@ -27,9 +36,7 @@ default-tls = ["reqwest/default-tls"]
 rustls-tls = ["reqwest/rustls-tls"]
 
 [dependencies]
-atomic-time = "0.2.1"
 axum = "0.8.1"
-educe = { version = "0.7.6", default-features = false, features = ["Debug"] }
 futures = "0.3.31"
 http = "1.2.0"
 jsonwebtoken = "9.3.0"
@@ -41,7 +48,7 @@ serde_json = "1.0.134"
 serde_with = "3.12.0"
 snafu = "0.8.5"
 time = "0.3.37"
-tokio = "1.42.0"
+tokio = { version = "1.42.0", features = ["rt", "sync", "time"] }
 tower = "0.5.2"
 tracing = "0.1.41"
 try-again = "0.2.0"
@@ -50,10 +57,12 @@ url = "2.5.4"
 uuid = { version = "1.11.0", features = ["v7"] }
 
 [dev-dependencies]
-assertr = "0.6.0"
+assertr = "0.7.0"
 axum = { version = "0.8.9", features = ["macros"] }
+base64 = "0.23.0"
 keycloak = "26.6.2"
 testcontainers = "0.28.0"
+tokio = { version = "1.42.0", features = ["macros", "net", "rt-multi-thread", "time"] }
 tower-http = { version = "0.7.0", features = ["trace"] }
 tracing-subscriber = "0.3.23"
 uuid = { version = "1.24.1", features = ["v7", "serde"] }

@@ -27,12 +27,20 @@ check:
 
 # Lint the code.
 clippy:
-    cargo clippy --all --all-targets --all-features -- -W clippy::pedantic
+    cargo clippy --all --all-targets --all-features -- -D warnings -W clippy::pedantic
 
 # Run all tests, including integration tests (requires Podman to launch Keycloak containers).
 # We pass the `--nocapture` flag to be able to see tracing output.
 test:
     cargo test  --all --all-features -- --nocapture
+
+# Build the crate documentation.
+build-docs:
+    RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+
+# Build and open the crate documentation for review.
+open-docs:
+    cargo doc --all-features --no-deps --open
 
 # Run security auditing.
 audit:
@@ -50,4 +58,12 @@ verify:
     just check
     just clippy
     just test
-    cargo doc --no-deps --all-features
+    just build-docs
+
+# While sleeping overnight, the podman machine clock might drift... This can reset it without a restart.
+fix-podman-clock:
+    podman machine ssh "sudo date -u -s @$(date -u +%s)"
+
+# Replace the throwaway RSA and EC test keys and their public JWK metadata.
+regenerate-test-key-fixtures rsa_bits="2048":
+    src/test_support/fixtures/regenerate.sh "{{rsa_bits}}"
