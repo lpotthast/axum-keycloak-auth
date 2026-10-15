@@ -85,7 +85,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Removed the `atomic-time` and `educe` dependencies.
 - Expanded CI and `just` automation for formatting, feature combinations, Clippy, MSRV, RustSec, unit tests, and
   integration tests, and enabled pedantic Clippy lints.
-- Updated development dependencies and integration tests to Keycloak 26.7.2.
+- Updated development dependencies, including `assertr` 0.9.1, and integration tests to Keycloak 26.7.2.
 - Added the changelog and backfilled earlier releases.
 
 ## [0.8.3] - 2025-05-18

@@ -235,7 +235,10 @@ impl KeySource for KeycloakAuthInstance {
 
 #[cfg(test)]
 mod tests {
-    use assertr::prelude::*;
+    use assertr::{
+        matchers::{IsFalse, IsNone, IsSome, IsTrue, eq},
+        prelude::*,
+    };
     use jsonwebtoken::Algorithm;
 
     use crate::{
@@ -243,7 +246,7 @@ mod tests {
         test_support::{MockOidcServer, MockResponse, RSA_KEY_A, config_for},
     };
 
-    use super::{KeycloakAuthInstance, KeycloakConfig};
+    use super::{KeycloakAuthInstance, KeycloakConfig, OperationalStatus};
 
     #[tokio::test]
     async fn connect_succeeds_and_reports_an_operational_status() {
@@ -257,12 +260,14 @@ mod tests {
             .expect("connect must succeed against a healthy provider");
 
         assert_that!(instance.is_operational().await).is_true();
-        let status = instance.operational_status().await;
-        assert_that!(status.is_operational).is_true();
-        assert_that!(&status.time_since_last_success).is_some();
-        assert_that!(&status.time_since_last_attempt).is_some();
-        assert_that!(&status.last_error).is_none();
-        assert_that!(status.consecutive_failures).is_equal_to(0);
+        assert_that!(instance.operational_status().await).matches(partial!(OperationalStatus {
+            is_operational: IsTrue,
+            time_since_last_success: IsSome,
+            time_since_last_attempt: IsSome,
+            last_error: IsNone,
+            consecutive_failures: eq(0),
+            ..
+        }));
     }
 
     #[tokio::test]
@@ -281,13 +286,11 @@ mod tests {
         let provider = MockOidcServer::start().await;
         provider.make_discovery_unavailable().await;
 
-        let error = KeycloakAuthInstance::connect(config_for(&provider))
-            .await
-            .expect_err("connect must fail when the initial discovery fails");
-
-        assert_that!(error).is_matching(pattern!(ConnectError::InitialDiscovery {
-            source: AuthError::OidcDiscovery { .. }
-        }));
+        assert_that!(KeycloakAuthInstance::connect(config_for(&provider)).await)
+            .err()
+            .is_matching(pattern!(ConnectError::InitialDiscovery {
+                source: AuthError::OidcDiscovery { .. }
+            }));
     }
 
     #[tokio::test]
@@ -327,13 +330,11 @@ mod tests {
             })))
             .await;
 
-        let error = KeycloakAuthInstance::connect(config_for(&provider))
-            .await
-            .expect_err("a discovery document violating the canonical OIDC contract must fail");
-
-        assert_that!(error).is_matching(pattern!(ConnectError::InitialDiscovery {
-            source: AuthError::OidcDiscovery { .. }
-        }));
+        assert_that!(KeycloakAuthInstance::connect(config_for(&provider)).await)
+            .err()
+            .is_matching(pattern!(ConnectError::InitialDiscovery {
+                source: AuthError::OidcDiscovery { .. }
+            }));
     }
 
     #[tokio::test]
@@ -347,11 +348,13 @@ mod tests {
             .expect("ready must return after the initial discovery attempt terminated");
 
         assert_that!(instance.is_operational().await).is_false();
-        let status = instance.operational_status().await;
-        assert_that!(status.is_operational).is_false();
-        assert_that!(&status.time_since_last_success).is_none();
-        assert_that!(&status.last_error).is_some();
-        assert_that!(status.consecutive_failures).is_equal_to(1);
+        assert_that!(instance.operational_status().await).matches(partial!(OperationalStatus {
+            is_operational: IsFalse,
+            time_since_last_success: IsNone,
+            last_error: IsSome,
+            consecutive_failures: eq(1),
+            ..
+        }));
     }
 
     #[tokio::test]
@@ -362,12 +365,13 @@ mod tests {
         instance.ready().await;
 
         assert_that!(instance.is_operational().await).is_false();
-        let status = instance.operational_status().await;
-        assert_that!(status.is_operational).is_false();
-        assert_that!(&status.time_since_last_success).is_none();
-        assert_that!(status.last_error.as_deref())
-            .is_equal_to(Some("The provider returned no usable decoding keys"));
-        assert_that!(status.consecutive_failures).is_equal_to(1);
+        assert_that!(instance.operational_status().await).matches(partial!(OperationalStatus {
+            is_operational: IsFalse,
+            time_since_last_success: IsNone,
+            last_error: partial!(variant Some(eq("The provider returned no usable decoding keys"))),
+            consecutive_failures: eq(1),
+            ..
+        }));
         assert_that!(instance.refresh_state_snapshot().next_refresh_at).is_some();
     }
 }

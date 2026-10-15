@@ -3,6 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use assertr::prelude::*;
 use tracing_subscriber::fmt::MakeWriter;
 
 #[derive(Clone, Default)]
@@ -41,5 +42,21 @@ impl<'writer> MakeWriter<'writer> for CapturedLogs {
 
     fn make_writer(&'writer self) -> Self::Writer {
         CapturedLogWriter(self.0.clone())
+    }
+}
+
+/// Asserts that the captured `logs` contain `expected` if and only if `logged` is set.
+#[track_caller]
+pub(crate) fn assert_logged_iff(
+    logs: &str,
+    expected: &str,
+    logged: bool,
+    subject_name: impl Into<String>,
+) {
+    let logs = assert_that!(logs).with_subject_name(subject_name);
+    if logged {
+        logs.contains(expected);
+    } else {
+        logs.does_not_contain(expected);
     }
 }

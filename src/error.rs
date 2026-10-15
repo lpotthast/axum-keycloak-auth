@@ -295,7 +295,7 @@ mod tests {
         let error = AuthError::JsonParse {
             source: Arc::new(source),
         };
-        assert_that!(error.to_string().as_str()).contains("invalid type: map, expected i64");
+        assert_that!(error.to_string()).contains("invalid type: map, expected i64");
 
         assert_invalid_token_response(error).await;
     }
@@ -332,28 +332,25 @@ mod tests {
             .await
             .expect("the JSON response body must be readable");
         let body = std::str::from_utf8(&body).expect("the JSON response body must be UTF-8");
-        assert_that!(body).is_equal_to(r#"{"error":"Missing expected role"}"#);
-        assert_that!(body).does_not_contain("sensitive-administrator-role");
+        assert_that!(body)
+            .is_equal_to(r#"{"error":"Missing expected role"}"#)
+            .does_not_contain("sensitive-administrator-role");
     }
 
     async fn assert_invalid_token_response(error: AuthError) {
         let response = error.into_response();
 
         assert_that!(response.status()).is_equal_to(StatusCode::UNAUTHORIZED);
-        assert_that!(
-            response
-                .headers()
-                .get(WWW_AUTHENTICATE)
-                .expect("an invalid token response must carry a Bearer challenge")
-                .to_str()
-                .expect("the static Bearer challenge must be valid ASCII")
-        )
-        .is_equal_to("Bearer error=\"invalid_token\"");
+        assert_that!(response.headers().get(WWW_AUTHENTICATE).cloned())
+            .some()
+            .ascii()
+            .is_equal_to("Bearer error=\"invalid_token\"");
         let body = to_bytes(response.into_body(), 1024)
             .await
             .expect("the JSON response body must be readable");
         let body = std::str::from_utf8(&body).expect("the JSON response body must be UTF-8");
-        assert_that!(body).is_equal_to(r#"{"error":"invalid_token"}"#);
-        assert_that!(body).does_not_contain("expected i64");
+        assert_that!(body)
+            .is_equal_to(r#"{"error":"invalid_token"}"#)
+            .does_not_contain("expected i64");
     }
 }

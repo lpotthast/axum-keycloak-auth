@@ -196,8 +196,8 @@ mod tests {
             TokenExtractionErrorPolicy::Reject,
         ] {
             assert_that!(extract_jwt(&request, &extractors, policy, None))
-                .get_ok()
-                .get_some()
+                .ok()
+                .some()
                 .is_equal_to("abc.def.ghi");
         }
     }
@@ -212,8 +212,8 @@ mod tests {
             TokenExtractionErrorPolicy::Fallback,
             None,
         ))
-        .get_ok()
-        .get_some()
+        .ok()
+        .some()
         .is_equal_to("abc.def.ghi");
     }
 
@@ -243,10 +243,10 @@ mod tests {
         };
 
         assert_that!(extracted)
-            .get_ok()
-            .get_some()
+            .ok()
+            .some()
             .is_equal_to("abc.def.ghi");
-        assert_that!(logs.contents().as_str())
+        assert_that!(logs.contents())
             .does_not_contain(DEBUG_SECRET)
             .does_not_contain(ERROR_SECRET);
     }
@@ -280,12 +280,11 @@ mod tests {
         };
 
         assert_that!(extracted)
-            .get_ok()
-            .get_some()
+            .ok()
+            .some()
             .is_equal_to("abc.def.ghi");
-        let contents = logs.contents();
-        assert_that!(contents.matches("Token extractor failed.").count()).is_equal_to(2);
-        assert_that!(contents.as_str())
+        assert_that!(logs.contents())
+            .contains_occurrences("Token extractor failed.", 2)
             .contains(" INFO ")
             .contains("SecretLeakingTokenExtractor")
             .contains(DEBUG_SECRET)
@@ -304,8 +303,8 @@ mod tests {
             TokenExtractionErrorPolicy::Fallback,
             None,
         ))
-        .get_ok()
-        .get_some()
+        .ok()
+        .some()
         .is_equal_to("abc.def.ghi");
     }
 
@@ -331,7 +330,8 @@ mod tests {
             TokenExtractionErrorPolicy::Reject,
         ] {
             assert_that!(extract_jwt(&request, &header_then_query(), policy, None,))
-                .is_matching(pattern!(Ok(None)));
+                .ok()
+                .is_none();
         }
     }
 }

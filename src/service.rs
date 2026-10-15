@@ -193,8 +193,8 @@ mod tests {
         PassthroughMode,
         layer::KeycloakAuthLayer,
         test_support::{
-            CapturedLogs, ManualClock, RSA_KEY_A, keycloak_claims, offline_instance,
-            validation_time,
+            CapturedLogs, ManualClock, RSA_KEY_A, assert_logged_iff, keycloak_claims,
+            offline_instance, validation_time,
         },
     };
 
@@ -254,15 +254,11 @@ mod tests {
             match passthrough_mode {
                 PassthroughMode::Block => {
                     assert_that!(response.status()).is_equal_to(StatusCode::UNAUTHORIZED);
-                    assert_that!(
-                        response
-                            .headers()
-                            .get(WWW_AUTHENTICATE)
-                            .expect("an invalid token response must carry a Bearer challenge")
-                            .to_str()
-                            .expect("the Bearer challenge must be valid ASCII")
-                    )
-                    .is_equal_to("Bearer error=\"invalid_token\"");
+                    assert_that!(response.headers().get(WWW_AUTHENTICATE).cloned())
+                        .with_subject_name("the Bearer challenge of an invalid token response")
+                        .some()
+                        .ascii()
+                        .is_equal_to("Bearer error=\"invalid_token\"");
                     let body = to_bytes(response.into_body(), 1024)
                         .await
                         .expect("the JSON response body must be readable");
@@ -277,25 +273,31 @@ mod tests {
 
             let contents = logs.contents();
             let enabled = authentication_error_log_level.is_some();
-            assert_that!(contents.contains("Authentication failed"))
-                .with_subject_name(format!(
+            assert_logged_iff(
+                &contents,
+                "Authentication failed",
+                enabled,
+                format!(
                     "authentication error logging enabled = {enabled}, mode = {passthrough_mode:?}"
-                ))
-                .is_equal_to(enabled);
-            assert_that!(contents.contains("invalid type: map, expected i64"))
-                .with_subject_name(format!("detailed error logging enabled = {enabled}"))
-                .is_equal_to(enabled);
+                ),
+            );
+            assert_logged_iff(
+                &contents,
+                "invalid type: map, expected i64",
+                enabled,
+                format!("detailed error logging enabled = {enabled}"),
+            );
             if let Some(level) = authentication_error_log_level {
-                assert_that!(contents.as_str())
+                assert_that!(contents)
                     .with_subject_name("configured authentication error log level")
                     .contains(level.as_str());
             }
-            assert_that!(contents.contains(&token))
+            assert_that!(contents)
                 .with_subject_name("the raw token is never logged")
-                .is_false();
-            assert_that!(contents.contains("test@example.com"))
+                .does_not_contain(&token);
+            assert_that!(contents)
                 .with_subject_name("unrelated claims are never logged")
-                .is_false();
+                .does_not_contain("test@example.com");
         }
     }
 
@@ -348,20 +350,27 @@ mod tests {
                 .await
                 .expect("the JSON response body must be readable");
             let body = std::str::from_utf8(&body).expect("the JSON response body must be UTF-8");
-            assert_that!(body).is_equal_to(r#"{"error":"Missing expected role"}"#);
-            assert_that!(body).does_not_contain(MISSING_ROLE);
+            assert_that!(body)
+                .is_equal_to(r#"{"error":"Missing expected role"}"#)
+                .does_not_contain(MISSING_ROLE);
 
             let contents = logs.contents();
             let enabled = authentication_error_log_level.is_some();
-            assert_that!(contents.contains("Authentication failed"))
-                .with_subject_name("missing-role authentication error event")
-                .is_equal_to(enabled);
-            assert_that!(contents.contains(&format!("missing_role={MISSING_ROLE}")))
-                .with_subject_name("structured missing-role hint")
-                .is_equal_to(enabled);
-            assert_that!(contents.contains(&token))
+            assert_logged_iff(
+                &contents,
+                "Authentication failed",
+                enabled,
+                "missing-role authentication error event",
+            );
+            assert_logged_iff(
+                &contents,
+                &format!("missing_role={MISSING_ROLE}"),
+                enabled,
+                "structured missing-role hint",
+            );
+            assert_that!(contents)
                 .with_subject_name("the raw token is never logged")
-                .is_false();
+                .does_not_contain(&token);
         }
     }
 
@@ -410,20 +419,30 @@ mod tests {
             let contents = logs.contents();
             let extraction_logging_enabled = token_extraction_error_log_level.is_some();
             let authentication_logging_enabled = authentication_error_log_level.is_some();
-            assert_that!(contents.contains("Token extractor failed."))
-                .with_subject_name("per-extractor error event")
-                .is_equal_to(extraction_logging_enabled);
-            assert_that!(
-                contents.contains("The 'Authorization' header was not present on a request.")
-            )
-            .with_subject_name("per-extractor error details")
-            .is_equal_to(extraction_logging_enabled);
-            assert_that!(contents.contains("Authentication failed"))
-                .with_subject_name("final authentication error event")
-                .is_equal_to(authentication_logging_enabled);
-            assert_that!(contents.contains("No JWT could be extracted from the request."))
-                .with_subject_name("final authentication error details")
-                .is_equal_to(authentication_logging_enabled);
+            assert_logged_iff(
+                &contents,
+                "Token extractor failed.",
+                extraction_logging_enabled,
+                "per-extractor error event",
+            );
+            assert_logged_iff(
+                &contents,
+                "The 'Authorization' header was not present on a request.",
+                extraction_logging_enabled,
+                "per-extractor error details",
+            );
+            assert_logged_iff(
+                &contents,
+                "Authentication failed",
+                authentication_logging_enabled,
+                "final authentication error event",
+            );
+            assert_logged_iff(
+                &contents,
+                "No JWT could be extracted from the request.",
+                authentication_logging_enabled,
+                "final authentication error details",
+            );
 
             if extraction_logging_enabled {
                 let event = contents

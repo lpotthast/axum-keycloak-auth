@@ -118,9 +118,7 @@ mod tests {
 
         assert_that!(delays.len()).is_greater_than(1);
         for delay in &delays {
-            assert_that!(delay)
-                .is_greater_or_equal_to(Duration::from_secs(4))
-                .is_less_or_equal_to(Duration::from_secs(6));
+            assert_that!(delay).is_in_range(Duration::from_secs(4)..=Duration::from_secs(6));
         }
         for id in 1..=16 {
             assert_that!(policy.failure_delay(uuid::Uuid::from_u128(id), 1, 2))

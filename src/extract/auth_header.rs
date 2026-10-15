@@ -94,7 +94,8 @@ mod tests {
         assert_that!(AuthHeaderTokenExtractor::try_extract(&Request::new(
             Body::empty()
         )))
-        .is_matching(pattern!(Ok(None)));
+        .ok()
+        .is_none();
     }
 
     #[test]
@@ -120,8 +121,8 @@ mod tests {
         assert_that!(AuthHeaderTokenExtractor::try_extract(
             &request_with_authorization("Bearer abc.def.ghi")
         ))
-        .get_ok()
-        .get_some()
+        .ok()
+        .some()
         .is_equal_to("abc.def.ghi");
     }
 

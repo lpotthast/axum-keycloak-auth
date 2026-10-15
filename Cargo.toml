@@ -57,7 +57,7 @@ url = "2.5.4"
 uuid = { version = "1.11.0", features = ["v7"] }
 
 [dev-dependencies]
-assertr = "0.7.0"
+assertr = { version = "0.9.1", features = ["http", "partial", "serde-json"] }
 axum = { version = "0.8.9", features = ["macros"] }
 base64 = "0.23.0"
 keycloak = "26.6.2"

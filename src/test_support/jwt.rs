@@ -1,3 +1,4 @@
+use assertr::prelude::*;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, errors::Error, jwk::Jwk};
 use serde::Serialize;
@@ -66,11 +67,9 @@ impl KeyFixture {
     ///
     /// Panics for RSA fixtures, which have no curve point.
     pub(crate) fn public_point(&self) -> Vec<u8> {
-        assert_eq!(
-            self.kind,
-            KeyKind::Ec,
-            "only EC fixtures have a public point"
-        );
+        assert_that!(self.kind)
+            .with_detail_message("only EC fixtures have a public point")
+            .is_equal_to(KeyKind::Ec);
         let public_jwk: Value = serde_json::from_str(self.public_jwk)
             .unwrap_or_else(|err| panic!("generated EC JWK fixture must be valid JSON: {err}"));
         let coordinate = |name: &str| -> Vec<u8> {

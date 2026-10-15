@@ -16,7 +16,7 @@ pub(crate) use instance::{
 };
 pub(crate) use jwt::{EC_KEY_A, RSA_KEY_A, RSA_KEY_B, keycloak_claims};
 pub(crate) use keys::StaticKeySource;
-pub(crate) use logs::CapturedLogs;
+pub(crate) use logs::{CapturedLogs, assert_logged_iff};
 pub(crate) use oidc::{MockOidcServer, MockResponse, ResponseGate};
 pub(crate) use policy::{legacy_policy, strict_policy};
 
@@ -54,27 +54,26 @@ mod tests {
             .sign(&claims, Algorithm::RS384, Some("custom-kid"))
             .expect("RSA fixture must sign");
 
-        let header = jsonwebtoken::decode_header(&token).expect("header must decode");
-        assert_that!(header.alg).is_equal_to(Algorithm::RS384);
-        assert_that!(header.kid.as_deref()).is_equal_to(Some("custom-kid"));
+        let header = assert_that_owned!(jsonwebtoken::decode_header(&token)).ok();
+        header.derive(|it| &it.alg).is_equal_to(Algorithm::RS384);
+        header.derive(|it| &it.kid).some().is_equal_to("custom-kid");
         let token_without_kid = RSA_KEY_A
             .sign(&claims, Algorithm::RS256, None)
             .expect("RSA fixture must sign without a kid");
-        assert_that!(
-            jsonwebtoken::decode_header(&token_without_kid)
-                .expect("header without kid must decode")
-                .kid
-        )
-        .is_none();
+        assert_that!(jsonwebtoken::decode_header(&token_without_kid))
+            .ok()
+            .derive(|it| &it.kid)
+            .is_none();
 
         let validation = signature_only_validation(Algorithm::RS384);
         let key_a = DecodingKey::from_jwk(&RSA_KEY_A.jwk(Some("custom-kid"), Algorithm::RS384))
             .expect("key A JWK must decode");
         let decoded = jsonwebtoken::decode::<Value>(&token, &key_a, &validation)
             .expect("matching key must validate");
-        assert_that!(&decoded.claims["custom"]["enabled"]).is_equal_to(true);
-        assert_that!(&decoded.claims["iat"]).is_equal_to(1_899_999_000_i64);
-        assert_that!(&decoded.claims["nbf"]).is_equal_to(1_899_999_500_i64);
+        let payload = assert_that!(decoded.claims);
+        payload.pointer("/custom/enabled").bool().is_true();
+        payload.pointer("/iat").is_equal_to(1_899_999_000_i64);
+        payload.pointer("/nbf").is_equal_to(1_899_999_500_i64);
 
         let key_b = DecodingKey::from_jwk(&RSA_KEY_B.jwk(Some("other-kid"), Algorithm::RS384))
             .expect("key B JWK must decode");
@@ -122,8 +121,8 @@ mod tests {
             &published,
             Algorithm::HS256,
         ))
-        .get_ok()
-        .is_equal_to(true);
+        .ok()
+        .is_true();
         // Sanity: the genuine ES256 signature is not what the HMAC produced.
         assert_that!(hmac_with_public_point.as_str()).is_not_equal_to(signature);
     }
@@ -158,7 +157,9 @@ mod tests {
             .json::<Value>()
             .await
             .expect("discovery response must be JSON");
-        assert_that!(&discovery["jwks_uri"]).is_equal_to(server.jwks_url().as_str());
+        assert_that!(discovery)
+            .pointer("/jwks_uri")
+            .is_equal_to(server.jwks_url().as_str());
 
         let first_jwks = reqwest::get(server.jwks_url())
             .await
@@ -166,7 +167,9 @@ mod tests {
             .json::<Value>()
             .await
             .expect("first JWKS response must be JSON");
-        assert_that!(&first_jwks["keys"][0]["kid"]).is_equal_to("key-a");
+        assert_that!(first_jwks)
+            .pointer("/keys/0/kid")
+            .is_equal_to("key-a");
 
         server
             .set_jwks(vec![RSA_KEY_B.jwk(Some("key-b"), Algorithm::RS512)])
@@ -177,7 +180,9 @@ mod tests {
             .json::<Value>()
             .await
             .expect("rotated JWKS response must be JSON");
-        assert_that!(&rotated_jwks["keys"][0]["kid"]).is_equal_to("key-b");
+        assert_that!(rotated_jwks)
+            .pointer("/keys/0/kid")
+            .is_equal_to("key-b");
         assert_that!(server.discovery_requests()).is_equal_to(1);
         assert_that!(server.jwks_requests()).is_equal_to(2);
     }
@@ -228,7 +233,8 @@ mod tests {
             .await
             .expect("released JWKS request must finish")
             .expect("gated request task must complete");
-        assert_that!(gated_response.text().await.expect("body must read"))
+        assert_that!(gated_response.text().await)
+            .ok()
             .is_equal_to("malformed-json");
     }
 }

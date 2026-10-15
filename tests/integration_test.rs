@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use assertr::prelude::*;
+use assertr::{
+    matchers::{eq, gt},
+    prelude::*,
+};
 use http::StatusCode;
 use keycloak::{
     KeycloakAdmin,
@@ -55,11 +58,11 @@ async fn test_integration() {
         .timeout(Duration::from_secs(10))
         .send()
         .await
-        .unwrap();
+        .expect("the unauthenticated am-i-authenticated request must be answered");
 
     assert_that!(am_i_authenticated_response.status()).is_equal_to(StatusCode::OK);
     assert_that!(am_i_authenticated_response.text().await)
-        .get_ok()
+        .ok()
         .is_equal_to("You are not authenticated.");
 
     let who_am_i_response = Client::new()
@@ -68,17 +71,19 @@ async fn test_integration() {
         .timeout(Duration::from_secs(10))
         .send()
         .await
-        .unwrap();
+        .expect("the who-am-i request must be answered");
 
     tracing::info!(?who_am_i_response);
     let status = who_am_i_response.status();
-    let data = who_am_i_response.json::<WhoAmIResponse>().await.unwrap();
+    let data = who_am_i_response.json::<WhoAmIResponse>().await;
     tracing::info!(?status, ?data);
 
     assert_that!(status).is_equal_to(StatusCode::OK);
-    assert_that!(data.name.as_str()).is_equal_to("test-user-mail@foo.bar");
-    assert_that!(data.keycloak_uuid.as_str()).is_equal_to("a7060488-c80b-40c5-83e2-d7000bf9738e");
-    assert_that!(data.token_valid_for_whole_seconds).is_greater_than(0);
+    assert_that!(data).ok().matches(partial!(WhoAmIResponse {
+        name: eq("test-user-mail@foo.bar"),
+        keycloak_uuid: eq("a7060488-c80b-40c5-83e2-d7000bf9738e"),
+        token_valid_for_whole_seconds: gt(0),
+    }));
 
     let am_i_authenticated_response = Client::new()
         .get(format!("{backend_url}/am-i-authenticated"))
@@ -86,11 +91,11 @@ async fn test_integration() {
         .timeout(Duration::from_secs(10))
         .send()
         .await
-        .unwrap();
+        .expect("the authenticated am-i-authenticated request must be answered");
 
     assert_that!(am_i_authenticated_response.status()).is_equal_to(StatusCode::OK);
     assert_that!(am_i_authenticated_response.text().await)
-        .get_ok()
+        .ok()
         .is_equal_to("You are authenticated.");
 
     be_jh.abort();

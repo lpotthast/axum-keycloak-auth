@@ -159,12 +159,9 @@ mod tests {
             ],
         });
 
-        assert_that!(
-            keys.exact("shared-kid")
-                .expect("the shared kid must be indexed")
-                .count()
-        )
-        .is_equal_to(2);
+        assert_that!(keys.exact("shared-kid").map(Iterator::count))
+            .some()
+            .is_equal_to(2);
         assert_that!(keys.all_except("shared-kid").count()).is_equal_to(1);
     }
 }

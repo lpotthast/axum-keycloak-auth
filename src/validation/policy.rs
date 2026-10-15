@@ -613,7 +613,8 @@ mod tests {
             .build()
             .expect("a legacy policy with audiences must build");
         assert_that!(overriding.audiences_conflicting_with(&layer_audiences))
-            .is_equal_to(Some(&[String::from("other-service")][..]));
+            .some()
+            .contains_exactly(["other-service"]);
 
         // An empty layer value is not configuration being ignored: a policy-first setup has to
         // leave the required layer field empty, and must not be warned about.
@@ -662,37 +663,33 @@ mod tests {
     #[test]
     fn policy_construction_rejects_inconsistent_requirements() {
         assert_that!(ValidationPolicy::strict().build())
-            .get_err()
+            .err()
             .is_equal_to(ValidationPolicyError::MissingExpectedIssuers);
         assert_that!(strict_policy().expected_audiences(Vec::new()).build())
-            .get_err()
+            .err()
             .is_equal_to(ValidationPolicyError::MissingExpectedAudiences);
         assert_that!(
             ValidationPolicy::legacy()
                 .allowed_algorithms(Vec::new())
                 .build()
         )
-        .get_err()
+        .err()
         .is_equal_to(ValidationPolicyError::MissingAllowedAlgorithms);
         assert_that!(
             ValidationPolicy::legacy()
                 .accepted_token_types(Vec::new())
                 .build()
         )
-        .get_err()
+        .err()
         .is_equal_to(ValidationPolicyError::MissingAcceptedTokenTypes);
         assert_that!(
             ValidationPolicy::legacy()
                 .allowed_authorized_parties(Vec::new())
                 .build()
         )
-        .get_err()
+        .err()
         .is_equal_to(ValidationPolicyError::MissingAllowedAuthorizedParties);
-        ValidationPolicy::legacy()
-            .build()
-            .expect("the plain legacy preset must build");
-        strict_policy()
-            .build()
-            .expect("strict with issuers and audiences must build");
+        assert_that!(ValidationPolicy::legacy().build()).is_ok();
+        assert_that!(strict_policy().build()).is_ok();
     }
 }

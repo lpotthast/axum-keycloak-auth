@@ -114,9 +114,12 @@ mod tests {
     #[test]
     fn no_token_yields_ok_none() {
         let extractor = QueryParamTokenExtractor::default();
-        assert_that!(extractor.try_extract(&request_with_uri("/"))).is_matching(pattern!(Ok(None)));
+        assert_that!(extractor.try_extract(&request_with_uri("/")))
+            .ok()
+            .is_none();
         assert_that!(extractor.try_extract(&request_with_uri("/?other=1")))
-            .is_matching(pattern!(Ok(None)));
+            .ok()
+            .is_none();
     }
 
     #[test]
@@ -143,8 +146,8 @@ mod tests {
     fn single_valid_token_is_returned() {
         let extractor = QueryParamTokenExtractor::default();
         assert_that!(extractor.try_extract(&request_with_uri("/?token=value")))
-            .get_ok()
-            .get_some()
+            .ok()
+            .some()
             .is_equal_to("value");
     }
 
@@ -152,8 +155,8 @@ mod tests {
     fn multiple_tokens_first_one_is_returned() {
         let extractor = QueryParamTokenExtractor::default();
         assert_that!(extractor.try_extract(&request_with_uri("/?token=first&token=second")))
-            .get_ok()
-            .get_some()
+            .ok()
+            .some()
             .is_equal_to("first");
     }
 
@@ -163,8 +166,8 @@ mod tests {
         assert_that!(extractor.try_extract(&request_with_uri("/?token=%FF"))) // Invalid percent-decoded UTF-8.
             .is_matching(pattern!(Err(QueryParamExtractError::InvalidUtf8)));
         assert_that!(extractor.try_extract(&request_with_uri("/?token=abc.def.ghi")))
-            .get_ok()
-            .get_some()
+            .ok()
+            .some()
             .is_equal_to("abc.def.ghi");
     }
 
@@ -172,8 +175,8 @@ mod tests {
     fn extracts_custom_parameter() {
         let extractor = QueryParamTokenExtractor::extracting_key("foo");
         assert_that!(extractor.try_extract(&request_with_uri("/?foo=value")))
-            .get_ok()
-            .get_some()
+            .ok()
+            .some()
             .is_equal_to("value");
     }
 }

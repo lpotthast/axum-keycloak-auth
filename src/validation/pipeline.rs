@@ -363,19 +363,22 @@ mod tests {
 
     use crate::{
         clock::Clock,
-        discovery::RefreshPolicy,
+        discovery::{RefreshPolicy, RefreshStateSnapshot},
         error::AuthError,
         instance::KeycloakAuthInstance,
         layer::UnverifiedJwtHeaderLogging,
         test_support::{
             CapturedLogs, EC_KEY_A, ManualClock, MockOidcServer, RSA_KEY_A, RSA_KEY_B,
-            StaticKeySource, config_for, discovered_instance, keycloak_claims, legacy_policy,
-            refresh_policy_without_jitter, signed_token, strict_policy, validation_time,
-            wait_for_discovery_completion,
+            StaticKeySource, assert_logged_iff, config_for, discovered_instance, keycloak_claims,
+            legacy_policy, refresh_policy_without_jitter, signed_token, strict_policy,
+            validation_time, wait_for_discovery_completion,
         },
         token::{ProfileAndEmail, RawClaims, RawToken},
     };
-    use assertr::prelude::*;
+    use assertr::{
+        matchers::{IsFalse, IsNone, IsOk, IsSome, each, eq},
+        prelude::*,
+    };
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use futures::future::join_all;
     use jsonwebtoken::{Algorithm, Header, errors::ErrorKind, jwk::Jwk};
@@ -610,9 +613,7 @@ mod tests {
 
         let attempts = join_all((0..16).map(|_| decode_legacy(&instance, &token))).await;
 
-        for attempt in attempts {
-            assert_that!(attempt).is_ok();
-        }
+        assert_that!(attempts).matches(each(IsOk));
         assert_that!(provider.discovery_requests()).is_equal_to(2);
         assert_that!(provider.jwks_requests()).is_equal_to(2);
     }
@@ -643,9 +644,7 @@ mod tests {
             .await
             .expect("waiting validations must finish after the shared refresh")
             .expect("validation task must not panic");
-        for result in results {
-            assert_that!(result).is_ok();
-        }
+        assert_that!(results).matches(each(IsOk));
         assert_that!(provider.discovery_requests()).is_equal_to(2);
         assert_that!(provider.jwks_requests()).is_equal_to(2);
     }
@@ -680,14 +679,15 @@ mod tests {
             .expect("the last successful key set must survive a failed refresh");
 
         assert_that!(instance.is_operational().await).is_true();
-        let refresh_state = instance.refresh_state_snapshot();
-        assert_that!(&refresh_state.last_successful_at).is_some();
-        assert_that!(&refresh_state.last_attempted_at).is_some();
-        assert_that!(&refresh_state.last_error_at).is_some();
-        assert_that!(refresh_state.consecutive_failures).is_equal_to(1);
-        assert_that!(&refresh_state.next_refresh_at).is_some();
-        assert_that!(refresh_state.pending).is_false();
-        assert_that!(refresh_state.generation).is_equal_to(2);
+        assert_that!(instance.refresh_state_snapshot()).matches(partial!(RefreshStateSnapshot {
+            last_successful_at: IsSome,
+            last_attempted_at: IsSome,
+            last_error_at: IsSome,
+            consecutive_failures: eq(1),
+            next_refresh_at: IsSome,
+            pending: IsFalse,
+            generation: eq(2),
+        }));
         // `retry((1, 0))` performs the initial failed request plus one retry.
         assert_that!(provider.discovery_requests()).is_equal_to(3);
         assert_that!(provider.jwks_requests()).is_equal_to(1);
@@ -706,9 +706,11 @@ mod tests {
             .await
             .expect("an empty refresh must not replace usable cached keys");
 
-        let refresh_state = instance.refresh_state_snapshot();
-        assert_that!(&refresh_state.last_error_at).is_some();
-        assert_that!(refresh_state.consecutive_failures).is_equal_to(1);
+        assert_that!(instance.refresh_state_snapshot()).matches(partial!(RefreshStateSnapshot {
+            last_error_at: IsSome,
+            consecutive_failures: eq(1),
+            ..
+        }));
         assert_that!(provider.discovery_requests()).is_equal_to(2);
         assert_that!(provider.jwks_requests()).is_equal_to(2);
     }
@@ -735,9 +737,11 @@ mod tests {
             .await
             .expect("unusable replacement keys must not evict usable cached keys");
 
-        let refresh_state = instance.refresh_state_snapshot();
-        assert_that!(&refresh_state.last_error_at).is_some();
-        assert_that!(refresh_state.consecutive_failures).is_equal_to(1);
+        assert_that!(instance.refresh_state_snapshot()).matches(partial!(RefreshStateSnapshot {
+            last_error_at: IsSome,
+            consecutive_failures: eq(1),
+            ..
+        }));
         assert_that!(provider.discovery_requests()).is_equal_to(2);
         assert_that!(provider.jwks_requests()).is_equal_to(2);
     }
@@ -766,11 +770,13 @@ mod tests {
             .await
             .expect("a later usable result must replace retained stale data");
 
-        let refresh_state = instance.refresh_state_snapshot();
-        assert_that!(refresh_state.consecutive_failures).is_equal_to(0);
         // The successful refresh ends the failure streak, so health reporting must no longer
         // surface the stale error.
-        assert_that!(&refresh_state.last_error_at).is_none();
+        assert_that!(instance.refresh_state_snapshot()).matches(partial!(RefreshStateSnapshot {
+            consecutive_failures: eq(0),
+            last_error_at: IsNone,
+            ..
+        }));
         assert_that!(provider.discovery_requests()).is_equal_to(3);
         assert_that!(provider.jwks_requests()).is_equal_to(3);
     }
@@ -1378,8 +1384,8 @@ mod tests {
             &published_key,
             Algorithm::HS256,
         ))
-        .get_ok()
-        .is_equal_to(true);
+        .ok()
+        .is_true();
 
         let result = decode_legacy(&source, &forged).await;
 
@@ -1477,8 +1483,7 @@ mod tests {
             .await
             .expect("a genuine ES256 token from the realm's own key must validate");
 
-        assert_that!(claims.get("sub").and_then(serde_json::Value::as_str))
-            .is_equal_to(Some("test-subject"));
+        assert_that!(claims).contains_entry("sub", serde_json::json!("test-subject"));
     }
 
     // ----- Further policy requirements --------------------------------------------------------
@@ -1691,10 +1696,19 @@ mod tests {
                 .validate(&token)
                 .await
                 .expect("the fixture token must satisfy the typed claim model and both roles");
-            assert_that!(validated.raw_claims.is_some()).is_equal_to(persist_raw_claims);
-            assert_that!(&validated.token.extra.profile.preferred_username)
+            let validated = assert_that!(validated);
+            let raw_claims = validated.derive(|it| &it.raw_claims);
+            if persist_raw_claims {
+                raw_claims.is_some();
+            } else {
+                raw_claims.is_none();
+            }
+            validated
+                .derive(|it| &it.token.extra.profile.preferred_username)
                 .is_equal_to("test-user");
-            assert_that!(&validated.token.extra.email.email).is_equal_to("test@example.com");
+            validated
+                .derive(|it| &it.token.extra.email.email)
+                .is_equal_to("test@example.com");
         }
 
         let rejecting = Validator::<String, ProfileAndEmail, StaticKeySource>::builder()
@@ -1748,17 +1762,24 @@ mod tests {
 
             let contents = logs.contents();
             let log_raw_claims = raw_claims_log_level.is_some();
-            assert_that!(contents.as_str())
+            assert_that!(contents)
                 .with_subject_name("logs are captured at all")
                 .contains("Decoded unverified JWT header");
-            assert_that!(contents.contains(&token))
+            assert_that!(contents)
                 .with_subject_name("the raw token never appears in logs")
-                .is_false();
-            assert_that!(contents.contains("test@example.com"))
-                .with_subject_name(format!("claims logged with opt-in = {log_raw_claims}"))
-                .is_equal_to(log_raw_claims);
-            assert_that!(contents.contains("sensitive data logging explicitly enabled"))
-                .is_equal_to(log_raw_claims);
+                .does_not_contain(&token);
+            assert_logged_iff(
+                &contents,
+                "test@example.com",
+                log_raw_claims,
+                format!("claims logged with opt-in = {log_raw_claims}"),
+            );
+            assert_logged_iff(
+                &contents,
+                "sensitive data logging explicitly enabled",
+                log_raw_claims,
+                format!("raw-claims opt-in notice logged with opt-in = {log_raw_claims}"),
+            );
             if let Some(level) = raw_claims_log_level {
                 let raw_claims_event = contents
                     .lines()
@@ -1822,28 +1843,37 @@ mod tests {
             let contents = logs.contents();
             let log_complete_header =
                 matches!(logging, Some(UnverifiedJwtHeaderLogging::Complete(_)));
-            assert_that!(contents.contains(&token))
+            assert_that!(contents)
                 .with_subject_name("the raw token never appears in logs")
-                .is_false();
-            assert_that!(contents.contains("suppressed-jku-marker"))
-                .with_subject_name("the attacker-controlled jku is logged only with opt-in")
-                .is_equal_to(log_complete_header);
-            assert_that!(contents.contains("suppressed-x5c-marker"))
-                .with_subject_name("the attacker-controlled x5c is logged only with opt-in")
-                .is_equal_to(log_complete_header);
-            assert_that!(
-                contents.contains("attacker-controlled header logging explicitly enabled")
-            )
-            .is_equal_to(log_complete_header);
+                .does_not_contain(&token);
+            assert_logged_iff(
+                &contents,
+                "suppressed-jku-marker",
+                log_complete_header,
+                "the attacker-controlled jku is logged only with opt-in",
+            );
+            assert_logged_iff(
+                &contents,
+                "suppressed-x5c-marker",
+                log_complete_header,
+                "the attacker-controlled x5c is logged only with opt-in",
+            );
+            assert_logged_iff(
+                &contents,
+                "attacker-controlled header logging explicitly enabled",
+                log_complete_header,
+                "the complete-header opt-in notice is logged only with opt-in",
+            );
             match logging {
                 None => {
-                    assert_that!(contents.as_str()).does_not_contain("unverified JWT header");
+                    assert_that!(contents).does_not_contain("unverified JWT header");
                 }
                 Some(UnverifiedJwtHeaderLogging::Metadata(level)) => {
                     assert_header_event_level(&contents, level);
-                    assert_that!(contents.as_str()).contains("alg=RS256");
-                    assert_that!(contents.as_str()).contains("kid=Some(\"key-a\")");
-                    assert_that!(contents.as_str()).contains("typ=Some(\"selected-typ-marker\")");
+                    assert_that!(contents)
+                        .contains("alg=RS256")
+                        .contains("kid=Some(\"key-a\")")
+                        .contains("typ=Some(\"selected-typ-marker\")");
                 }
                 Some(UnverifiedJwtHeaderLogging::Complete(level)) => {
                     assert_header_event_level(&contents, level);

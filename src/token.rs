@@ -327,9 +327,10 @@ mod tests {
             }))
             .expect("profile claims must deserialize");
 
-            assert_that!(&profile.full_name)
+            assert_that!(profile.full_name)
                 .with_subject_name(claim)
-                .is_equal_to(Some(String::from("Test User")));
+                .some()
+                .is_equal_to("Test User");
         }
     }
 

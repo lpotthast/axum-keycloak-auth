@@ -325,7 +325,10 @@ mod test {
         time::Duration,
     };
 
-    use assertr::prelude::*;
+    use assertr::{
+        matchers::{IsNone, eq},
+        prelude::*,
+    };
     use jsonwebtoken::{Algorithm, errors::ErrorKind};
     use nonempty::NonEmpty;
     use serde_json::{Value, json};
@@ -355,12 +358,14 @@ mod test {
             .expected_audiences(vec![String::from("account")])
             .build();
 
-        assert_that!(layer.dangerously_log_raw_claims).is_none();
-        assert_that!(layer.dangerously_log_unverified_jwt_header).is_none();
-        assert_that!(layer.dangerously_log_authentication_errors).is_none();
-        assert_that!(layer.dangerously_log_token_extraction_errors).is_none();
-        assert_that!(layer.token_extraction_error_policy)
-            .is_equal_to(crate::extract::TokenExtractionErrorPolicy::Fallback);
+        assert_that!(layer).matches(partial!(KeycloakAuthLayer {
+            dangerously_log_raw_claims: IsNone,
+            dangerously_log_unverified_jwt_header: IsNone,
+            dangerously_log_authentication_errors: IsNone,
+            dangerously_log_token_extraction_errors: IsNone,
+            token_extraction_error_policy: eq(TokenExtractionErrorPolicy::Fallback),
+            ..
+        }));
         assert_that!(provider.discovery_requests()).is_equal_to(0);
         assert_that!(provider.jwks_requests()).is_equal_to(0);
     }
@@ -392,16 +397,16 @@ mod test {
             })
             .build();
 
-        assert_that!(layer.token_extraction_error_policy)
-            .is_equal_to(TokenExtractionErrorPolicy::Reject);
-        assert_that!(layer.dangerously_log_raw_claims).is_equal_to(Some(tracing::Level::INFO));
-        assert_that!(layer.dangerously_log_unverified_jwt_header).is_equal_to(Some(
-            UnverifiedJwtHeaderLogging::Complete(tracing::Level::TRACE),
-        ));
-        assert_that!(layer.dangerously_log_authentication_errors)
-            .is_equal_to(Some(tracing::Level::INFO));
-        assert_that!(layer.dangerously_log_token_extraction_errors)
-            .is_equal_to(Some(tracing::Level::DEBUG));
+        assert_that!(layer).matches(partial!(KeycloakAuthLayer {
+            token_extraction_error_policy: eq(TokenExtractionErrorPolicy::Reject),
+            dangerously_log_raw_claims: eq(Some(tracing::Level::INFO)),
+            dangerously_log_unverified_jwt_header: eq(Some(UnverifiedJwtHeaderLogging::Complete(
+                tracing::Level::TRACE
+            ))),
+            dangerously_log_authentication_errors: eq(Some(tracing::Level::INFO)),
+            dangerously_log_token_extraction_errors: eq(Some(tracing::Level::DEBUG)),
+            ..
+        }));
 
         assert_that!(provider.discovery_requests()).is_equal_to(0);
         assert_that!(provider.jwks_requests()).is_equal_to(0);
@@ -438,8 +443,9 @@ mod test {
             .expect("token is valid at its expiration timestamp");
         assert_that!(token_data.subject).is_equal_to("test-subject");
         let raw_claims = raw_claims.expect("raw claims were requested");
-        assert_that!(&raw_claims["iat"]).is_equal_to(validation_time().unix_timestamp());
-        assert_that!(&raw_claims["nbf"]).is_equal_to(validation_time().unix_timestamp());
+        assert_that!(raw_claims)
+            .contains_entry("iat", json!(validation_time().unix_timestamp()))
+            .contains_entry("nbf", json!(validation_time().unix_timestamp()));
 
         clock.advance(time::Duration::seconds(1));
         assert_that!(layer.validate_raw_token(&token).await)
@@ -568,36 +574,24 @@ mod test {
 
         let (result_tx, result_rx) = mpsc::sync_channel(1);
         std::thread::spawn(move || {
-            let panic_message = catch_unwind(AssertUnwindSafe(|| {
+            let panic_payload = catch_unwind(AssertUnwindSafe(|| {
                 futures::executor::block_on(layer.validate_raw_token(&token))
             }))
-            .err()
-            .map(|panic| {
-                if let Some(message) = panic.downcast_ref::<String>() {
-                    message.clone()
-                } else if let Some(message) = panic.downcast_ref::<&str>() {
-                    String::from(*message)
-                } else {
-                    String::new()
-                }
-            });
+            .err();
             let consecutive_failures =
                 futures::executor::block_on(layer.instance.operational_status())
                     .consecutive_failures;
             result_tx
-                .send((panic_message, consecutive_failures))
+                .send((panic_payload, consecutive_failures))
                 .expect("the test must still be waiting for validation");
         });
 
-        let (panic_message, consecutive_failures) = result_rx
+        let (panic_payload, consecutive_failures) = result_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("validation and its cancellation bookkeeping must not deadlock");
-        let panic_message =
-            panic_message.expect("validation must panic without an active Tokio runtime");
-        assert!(
-            panic_message.contains("Tokio"),
-            "unexpected validation panic: {panic_message}"
-        );
+        let panic_payload =
+            panic_payload.expect("validation must panic without an active Tokio runtime");
+        assert_that!(panic_payload).message().contains("Tokio");
         assert_that!(consecutive_failures).is_equal_to(1);
     }
 

@@ -578,7 +578,10 @@ mod tests {
         time::Duration,
     };
 
-    use assertr::prelude::*;
+    use assertr::{
+        matchers::{IsFalse, IsSome, eq},
+        prelude::*,
+    };
     use jsonwebtoken::Algorithm;
 
     use crate::{
@@ -591,7 +594,7 @@ mod tests {
         },
     };
 
-    use super::{Discovery, OidcDiscoveryEndpoint, RefreshPolicy};
+    use super::{Discovery, OidcDiscoveryEndpoint, RefreshPolicy, RefreshStateSnapshot};
 
     struct DropFlag(Arc<AtomicBool>);
 
@@ -719,7 +722,7 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(2), discovery.wait_for_completion(2))
             .await
             .expect("the detached refresh must terminate after the gate opens");
-        assert_that!(discovery.decoding_keys().exact("key-b").is_some()).is_true();
+        assert_that!(discovery.decoding_keys().exact("key-b")).is_some();
     }
 
     #[tokio::test]
@@ -742,7 +745,7 @@ mod tests {
             .await
             .expect("the detached refresh must terminate after its caller was cancelled");
 
-        assert_that!(discovery.decoding_keys().exact("key-b").is_some()).is_true();
+        assert_that!(discovery.decoding_keys().exact("key-b")).is_some();
         assert_that!(provider.discovery_requests()).is_equal_to(2);
         assert_that!(provider.jwks_requests()).is_equal_to(2);
     }
@@ -846,11 +849,13 @@ mod tests {
 
         drop(runtime);
 
-        let cancelled = discovery.snapshot();
-        assert_that!(cancelled.pending).is_false();
-        assert_that!(cancelled.generation).is_equal_to(1);
-        assert_that!(cancelled.consecutive_failures).is_equal_to(1);
-        assert_that!(&cancelled.last_error_at).is_some();
+        assert_that!(discovery.snapshot()).matches(partial!(RefreshStateSnapshot {
+            pending: IsFalse,
+            generation: eq(1),
+            consecutive_failures: eq(1),
+            last_error_at: IsSome,
+            ..
+        }));
 
         clock.advance(time::Duration::seconds(1));
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -861,10 +866,12 @@ mod tests {
 
         assert_that!(requests.load(Ordering::SeqCst)).is_equal_to(2);
         assert_that!(discovery.is_operational()).is_true();
-        let recovered = discovery.snapshot();
-        assert_that!(recovered.pending).is_false();
-        assert_that!(recovered.generation).is_equal_to(2);
-        assert_that!(recovered.consecutive_failures).is_equal_to(0);
+        assert_that!(discovery.snapshot()).matches(partial!(RefreshStateSnapshot {
+            pending: IsFalse,
+            generation: eq(2),
+            consecutive_failures: eq(0),
+            ..
+        }));
     }
 
     #[tokio::test]
@@ -887,12 +894,14 @@ mod tests {
             .expect("a panicking discovery must still terminate its waiters");
 
         assert_that!(discovery.is_operational()).is_true();
-        let refresh_state = discovery.snapshot();
-        assert_that!(refresh_state.pending).is_false();
-        assert_that!(refresh_state.generation).is_equal_to(2);
-        assert_that!(refresh_state.consecutive_failures).is_equal_to(1);
-        assert_that!(&refresh_state.last_error_at).is_some();
-        assert_that!(&refresh_state.next_refresh_at).is_some();
+        assert_that!(discovery.snapshot()).matches(partial!(RefreshStateSnapshot {
+            pending: IsFalse,
+            generation: eq(2),
+            consecutive_failures: eq(1),
+            last_error_at: IsSome,
+            next_refresh_at: IsSome,
+            ..
+        }));
 
         let refreshed_keys = discovery.decoding_keys();
         assert_that!(refreshed_keys.generation()).is_equal_to(2);
