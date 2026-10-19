@@ -8,12 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_with::{OneOrMany, serde_as};
 use snafu::ResultExt;
 
-use crate::error::DecodeHeaderSnafu;
-use crate::role::ExpectRoles;
-use crate::role::KeycloakRole;
-use crate::role::NumRoles;
-
-use super::{error::AuthError, role::ExtractRoles, role::Role};
+use crate::error::{AuthError, DecodeHeaderSnafu};
+use crate::role::{ExpectRoles, ExtractRoles, KeycloakRole, NumRoles, Role};
 
 /// JWT payload claims keyed by claim name.
 ///
@@ -265,7 +261,7 @@ where
     fn not_expect_roles<I: Into<R> + Clone>(&self, roles: &[I]) -> Result<(), Self::Rejection> {
         for expected in roles {
             let expected: R = expected.clone().into();
-            if let Some(_role) = self.roles.iter().find(|role| role.role() == &expected) {
+            if self.roles.iter().any(|role| role.role() == &expected) {
                 return Err(AuthError::UnexpectedRole);
             }
         }
