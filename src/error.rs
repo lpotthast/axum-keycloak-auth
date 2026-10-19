@@ -79,25 +79,25 @@ pub enum ValidationPolicyError {
     #[snafu(display(
         "The policy requires a matching audience, but the configured expected audiences are empty."
     ))]
-    MissingExpectedAudiences,
+    EmptyExpectedAudiences,
 
     /// An empty algorithm allowlist was configured, which would reject every token.
     #[snafu(display(
         "An empty algorithm allowlist was configured, which would reject every token."
     ))]
-    MissingAllowedAlgorithms,
+    EmptyAllowedAlgorithms,
 
     /// An empty set of accepted token types was configured, which would reject every token.
     #[snafu(display(
         "An empty set of accepted token types was configured, which would reject every token."
     ))]
-    MissingAcceptedTokenTypes,
+    EmptyAcceptedTokenTypes,
 
     /// An empty set of allowed authorized parties was configured, which would reject every token.
     #[snafu(display(
         "An empty set of allowed authorized parties was configured, which would reject every token."
     ))]
-    MissingAllowedAuthorizedParties,
+    EmptyAllowedAuthorizedParties,
 }
 
 /// Errors surfaced by the authentication and middleware API.

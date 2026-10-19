@@ -506,7 +506,7 @@ impl ValidationPolicyBuilder {
                 .as_deref()
                 .is_some_and(<[String]>::is_empty)
         {
-            return Err(ValidationPolicyError::MissingExpectedAudiences);
+            return Err(ValidationPolicyError::EmptyExpectedAudiences);
         }
         if self
             .policy
@@ -514,7 +514,7 @@ impl ValidationPolicyBuilder {
             .as_deref()
             .is_some_and(<[Algorithm]>::is_empty)
         {
-            return Err(ValidationPolicyError::MissingAllowedAlgorithms);
+            return Err(ValidationPolicyError::EmptyAllowedAlgorithms);
         }
         if self
             .policy
@@ -522,7 +522,7 @@ impl ValidationPolicyBuilder {
             .as_deref()
             .is_some_and(<[String]>::is_empty)
         {
-            return Err(ValidationPolicyError::MissingAcceptedTokenTypes);
+            return Err(ValidationPolicyError::EmptyAcceptedTokenTypes);
         }
         if self
             .policy
@@ -530,7 +530,7 @@ impl ValidationPolicyBuilder {
             .as_deref()
             .is_some_and(<[String]>::is_empty)
         {
-            return Err(ValidationPolicyError::MissingAllowedAuthorizedParties);
+            return Err(ValidationPolicyError::EmptyAllowedAuthorizedParties);
         }
         Ok(self.policy)
     }
@@ -725,28 +725,28 @@ mod tests {
                 .build()
         )
         .err()
-        .is_equal_to(ValidationPolicyError::MissingExpectedAudiences);
+        .is_equal_to(ValidationPolicyError::EmptyExpectedAudiences);
         assert_that!(
             ValidationPolicy::legacy()
                 .allowed_algorithms(Vec::new())
                 .build()
         )
         .err()
-        .is_equal_to(ValidationPolicyError::MissingAllowedAlgorithms);
+        .is_equal_to(ValidationPolicyError::EmptyAllowedAlgorithms);
         assert_that!(
             ValidationPolicy::legacy()
                 .accepted_token_types(Vec::<String>::new())
                 .build()
         )
         .err()
-        .is_equal_to(ValidationPolicyError::MissingAcceptedTokenTypes);
+        .is_equal_to(ValidationPolicyError::EmptyAcceptedTokenTypes);
         assert_that!(
             ValidationPolicy::legacy()
                 .allowed_authorized_parties(Vec::<String>::new())
                 .build()
         )
         .err()
-        .is_equal_to(ValidationPolicyError::MissingAllowedAuthorizedParties);
+        .is_equal_to(ValidationPolicyError::EmptyAllowedAuthorizedParties);
         assert_that!(ValidationPolicy::legacy().build()).is_ok();
         assert_that!(strict_policy().build()).is_ok();
     }
