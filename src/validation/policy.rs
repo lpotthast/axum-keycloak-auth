@@ -501,7 +501,8 @@ impl ValidationPolicyBuilder {
 }
 
 /// Checks an integer `exp` against the configured leeway and minimum remaining lifetime. A missing
-/// claim is handled by `jsonwebtoken`'s required-claim check. A non-integer value is rejected here.
+/// or non-integer claim is rejected. `jsonwebtoken`'s required-claim check normally rejects a
+/// missing `exp` earlier, but this check does not rely on it.
 fn check_expiration(
     claims: &RawClaims,
     validation_time: time::OffsetDateTime,
@@ -509,7 +510,9 @@ fn check_expiration(
     expiry_transit_margin: Duration,
 ) -> Result<(), AuthError> {
     let Some(expiration) = claims.get("exp") else {
-        return Ok(());
+        return Err(decode_error(
+            jsonwebtoken::errors::ErrorKind::MissingRequiredClaim(String::from("exp")),
+        ));
     };
     let Some(expiration) = expiration.as_i64() else {
         return Err(AuthError::InvalidToken {
