@@ -33,7 +33,7 @@ impl RefreshPolicy {
         attempt: usize,
     ) -> Duration {
         let exponent = consecutive_failures.saturating_sub(1).min(31);
-        let multiplier = 1_u32.checked_shl(exponent).unwrap_or(u32::MAX);
+        let multiplier = 1_u32 << exponent;
         let nominal = self
             .failure_initial_backoff
             .checked_mul(multiplier)
@@ -52,7 +52,7 @@ impl RefreshPolicy {
 
         let mut hasher = std::hash::DefaultHasher::new();
         (instance_id, attempt).hash(&mut hasher);
-        let jitter = u64::from(self.jitter_basis_points);
+        let jitter = u64::from(self.jitter_basis_points).min(Self::BASIS_POINTS);
         let sample = hasher.finish() % (jitter * 2 + 1);
         let factor = Self::BASIS_POINTS - jitter + sample;
         let nanos =
