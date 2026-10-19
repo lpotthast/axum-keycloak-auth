@@ -80,6 +80,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - JWKS refreshes for unverifiable tokens with unknown key IDs are now single-flight, rate-limited after success, and
   retried with exponential backoff after failure. Requests wait at most five seconds for a shared refresh, including
   initial discovery. Refreshes remain on demand, so removed keys stay trusted until another refresh or restart.
+- `401 Unauthorized` responses for missing or unusable credentials now carry a `WWW-Authenticate: Bearer` challenge.
 - Claims validation now runs once after signature verification, preserving meaningful expiry, audience, and malformed
   token errors regardless of cached-key order. Tokens already verified by a cached key no longer trigger a pointless
   refresh solely because their `kid` is unknown.

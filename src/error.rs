@@ -246,7 +246,16 @@ impl IntoResponse for AuthError {
             | AuthError::MissingTokenQueryParam
             | AuthError::EmptyTokenQueryParam
             | AuthError::MissingToken
-            | AuthError::NoDecodingKeys) => (StatusCode::UNAUTHORIZED, Cow::Owned(err.to_string())),
+            | AuthError::NoDecodingKeys) => {
+                // RFC 6750 section 3: a request without usable credentials gets a challenge
+                // without an error code.
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    [(WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"))],
+                    Json(json!({ "error": err.to_string() })),
+                )
+                    .into_response();
+            }
             AuthError::MissingExpectedRole { .. } => (
                 StatusCode::FORBIDDEN,
                 Cow::Borrowed("Missing expected role"),
@@ -318,6 +327,17 @@ mod tests {
         ] {
             assert_invalid_token_response(error).await;
         }
+    }
+
+    #[tokio::test]
+    async fn missing_credentials_response_carries_a_bearer_challenge() {
+        let response = AuthError::MissingToken.into_response();
+
+        assert_that!(response.status()).is_equal_to(StatusCode::UNAUTHORIZED);
+        assert_that!(response.headers().get(WWW_AUTHENTICATE).cloned())
+            .some()
+            .ascii()
+            .is_equal_to("Bearer");
     }
 
     #[tokio::test]
