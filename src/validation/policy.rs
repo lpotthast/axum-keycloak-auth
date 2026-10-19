@@ -369,6 +369,9 @@ impl ValidationPolicyBuilder {
     /// Keycloak realm this is commonly `https://host/realms/<realm>`. An empty list disables the
     /// allowlist, except under [`ValidationPolicy::strict`], where at least one issuer must be
     /// named. The built-in token model always requires `iss` to be a string.
+    ///
+    /// [`KeycloakConfig::issuer`](crate::instance::KeycloakConfig::issuer) derives the issuer of a
+    /// configured realm.
     pub fn expected_issuers<I>(mut self, expected_issuers: I) -> Self
     where
         I: IntoIterator,

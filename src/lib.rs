@@ -23,19 +23,15 @@
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let server = Url::parse("https://keycloak.example/")?;
-//!     let realm = "my-realm";
-//!     let instance = KeycloakAuthInstance::connect(
-//!         KeycloakConfig::builder()
-//!             .server(server.clone())
-//!             .realm(realm.to_owned())
-//!             .build(),
-//!     )
-//!     .await?;
+//!     let config = KeycloakConfig::builder()
+//!         .server(Url::parse("https://keycloak.example/")?)
+//!         .realm(String::from("my-realm"))
+//!         .build();
 //!     let policy = ValidationPolicy::strict()
-//!         .expected_issuers(vec![format!("{server}realms/{realm}")])
-//!         .allowed_algorithms(vec![Algorithm::RS256])
+//!         .expected_issuers([config.issuer()])
+//!         .allowed_algorithms([Algorithm::RS256])
 //!         .build()?;
+//!     let instance = KeycloakAuthInstance::connect(config).await?;
 //!
 //!     let app: Router = Router::new().route("/protected", get(protected)).layer(
 //!         KeycloakAuthLayer::<String>::builder()
@@ -130,6 +126,7 @@ pub mod layer;
 pub mod oidc;
 pub mod oidc_discovery;
 pub mod role;
+mod server_url;
 pub mod service;
 pub mod token;
 pub mod validation;

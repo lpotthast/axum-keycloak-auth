@@ -10,8 +10,9 @@ use crate::{
     discovery::{
         DecodingKeys, Discovery, OidcDiscoveryEndpoint, RefreshPolicy, default_discovery_op,
     },
-    error::{AuthError, ConnectError},
+    error::{AuthError, ConnectError, InvalidServerUrlError},
     http::default_http_client,
+    server_url::ServerUrl,
     validation::KeySource,
 };
 
@@ -40,6 +41,34 @@ pub struct KeycloakConfig {
     /// keeps retrying in the background. Lower these values if a refresh should give up sooner.
     #[builder(default = (5, 1))]
     pub retry: (usize, u64),
+}
+
+impl KeycloakConfig {
+    /// The issuer that Keycloak puts into this realm's tokens, `<server>/realms/<realm>`.
+    ///
+    /// Pass it to [`ValidationPolicyBuilder::expected_issuers`] instead of assembling the URL by
+    /// hand. A trailing slash on [`Self::server`] is handled the same way as for OIDC discovery.
+    ///
+    /// Keycloak derives the issuer from the URL its clients use. If Keycloak is configured with a
+    /// different frontend hostname than [`Self::server`], tokens carry that hostname instead, and
+    /// the expected issuer must be configured explicitly.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`Self::server`] cannot serve as a base URL, such as a `mailto:` URL.
+    ///
+    /// [`ValidationPolicyBuilder::expected_issuers`]: crate::validation::ValidationPolicyBuilder::expected_issuers
+    #[must_use]
+    pub fn issuer(&self) -> String {
+        self.server_url()
+            .unwrap_or_else(|err| panic!("{err}"))
+            .realm_url(&self.realm)
+            .into()
+    }
+
+    fn server_url(&self) -> Result<ServerUrl, InvalidServerUrlError> {
+        ServerUrl::new(self.server.clone())
+    }
 }
 
 /// Discovers and caches the OIDC discovery document and decoding keys for one Keycloak realm.
@@ -72,8 +101,10 @@ impl KeycloakAuthInstance {
     // needs to outlive construction today.
     #[allow(clippy::needless_pass_by_value)]
     pub fn new(kc_config: KeycloakConfig) -> Self {
+        let server = kc_config.server_url().unwrap_or_else(|err| panic!("{err}"));
         Self::with_components(
             &kc_config,
+            &server,
             default_http_client(),
             uuid::Uuid::now_v7(),
             Arc::new(SystemClock),
@@ -127,11 +158,12 @@ impl KeycloakAuthInstance {
         kc_config: KeycloakConfig,
         client: reqwest::Client,
     ) -> Result<Self, ConnectError> {
-        if kc_config.server.cannot_be_a_base() {
-            return Err(ConnectError::InvalidServerUrl);
-        }
+        let server = kc_config
+            .server_url()
+            .map_err(|source| ConnectError::InvalidServerUrl { source })?;
         let instance = Self::with_components(
             &kc_config,
+            &server,
             client,
             uuid::Uuid::now_v7(),
             Arc::new(SystemClock),
@@ -152,15 +184,13 @@ impl KeycloakAuthInstance {
 
     fn with_components(
         kc_config: &KeycloakConfig,
+        server: &ServerUrl,
         client: reqwest::Client,
         id: uuid::Uuid,
         clock: Arc<dyn Clock>,
         refresh_policy: RefreshPolicy,
     ) -> Self {
-        let endpoint = OidcDiscoveryEndpoint::from_server_and_realm(
-            kc_config.server.clone(),
-            &kc_config.realm,
-        );
+        let endpoint = OidcDiscoveryEndpoint::new(server, &kc_config.realm);
         let op = default_discovery_op(
             client,
             id,
@@ -207,7 +237,17 @@ impl KeycloakAuthInstance {
         clock: Arc<dyn Clock>,
         refresh_policy: RefreshPolicy,
     ) -> Self {
-        Self::with_components(kc_config, default_http_client(), id, clock, refresh_policy)
+        let server = kc_config
+            .server_url()
+            .expect("the test server URL must serve as a base URL");
+        Self::with_components(
+            kc_config,
+            &server,
+            default_http_client(),
+            id,
+            clock,
+            refresh_policy,
+        )
     }
 
     #[cfg(test)]
@@ -224,10 +264,13 @@ impl KeycloakAuthInstance {
 
     #[cfg(test)]
     pub(crate) fn resolved_for_test(
-        config: KeycloakConfig,
+        config: &KeycloakConfig,
         data: crate::discovery::DiscoveredData,
     ) -> Self {
-        let endpoint = OidcDiscoveryEndpoint::from_server_and_realm(config.server, &config.realm);
+        let server = config
+            .server_url()
+            .expect("the test server URL must serve as a base URL");
+        let endpoint = OidcDiscoveryEndpoint::new(&server, &config.realm);
         Self {
             discovery: Discovery::resolved(endpoint, data),
         }
@@ -284,15 +327,36 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn issuer_is_derived_from_server_url_with_or_without_trailing_slash() {
+        for (server, expected_issuer) in [
+            ("https://host", "https://host/realms/my-realm"),
+            ("https://host/", "https://host/realms/my-realm"),
+            ("https://host/auth", "https://host/auth/realms/my-realm"),
+            ("https://host/auth/", "https://host/auth/realms/my-realm"),
+        ] {
+            let config = KeycloakConfig::builder()
+                .server(url::Url::parse(server).expect("test URL must parse"))
+                .realm(String::from("my-realm"))
+                .build();
+
+            assert_that!(config.issuer())
+                .with_subject_name(server)
+                .is_equal_to(expected_issuer);
+        }
+    }
+
     #[tokio::test]
     async fn connect_rejects_a_server_url_that_cannot_be_a_base() {
+        let server = url::Url::parse("mailto:admin@example.com").expect("mailto URL must parse");
         let config = KeycloakConfig::builder()
-            .server(url::Url::parse("mailto:admin@example.com").expect("mailto URL must parse"))
+            .server(server.clone())
             .realm(String::from(TEST_REALM))
             .build();
 
-        assert_that!(KeycloakAuthInstance::connect(config).await)
-            .is_matching(pattern!(Err(ConnectError::InvalidServerUrl)));
+        assert_that!(KeycloakAuthInstance::connect(config).await).is_matching(pattern!(
+            Err(ConnectError::InvalidServerUrl { source }) if source.url() == &server
+        ));
     }
 
     #[tokio::test]

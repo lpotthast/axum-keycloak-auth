@@ -60,9 +60,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   access-token types, and consistent `exp`, `nbf`, and `iat` checks. Policies support required claims, clock skew,
   expiry transit margins, and `azp` constraints, and return typed `ValidationPolicyError`s for invalid configurations.
   List settings accept any iterable, such as `.expected_audiences(["my-api"])`.
+- Added `KeycloakConfig::issuer`, which derives a realm's token issuer (`<server>/realms/<realm>`) for
+  `ValidationPolicyBuilder::expected_issuers`, handling a trailing slash on the server URL like OIDC discovery does.
 - Added `KeycloakAuthInstance::connect` and `connect_with_client` to await initial OIDC discovery and fail fast with
-  `ConnectError`. `connect_with_client` accepts a caller-supplied `reqwest::Client` for custom timeouts, proxies, trust
-  roots, and mTLS.
+  `ConnectError`. An unusable server URL is reported as an `InvalidServerUrlError` naming the rejected URL.
+  `connect_with_client` accepts a caller-supplied `reqwest::Client` for custom timeouts, proxies, trust roots, and mTLS.
 - Added `KeycloakAuthInstance::ready` and `operational_status`, returning the new `OperationalStatus` type, for startup
   coordination and health reporting.
 - Added `TokenExtractionErrorPolicy` to control whether malformed credentials fall through to lower-priority extractors

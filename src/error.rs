@@ -1,6 +1,6 @@
 //! Errors returned by connection, token validation, extraction, and policy construction.
 
-use std::{borrow::Cow, sync::Arc};
+use std::{borrow::Cow, fmt, sync::Arc};
 
 use axum::{
     Json,
@@ -9,6 +9,7 @@ use axum::{
 };
 use serde_json::json;
 use snafu::Snafu;
+use url::Url;
 
 use crate::http::RequestError;
 
@@ -16,10 +17,12 @@ use crate::http::RequestError;
 #[derive(Debug, Snafu)]
 #[non_exhaustive]
 pub enum ConnectError {
-    /// The configured Keycloak server URL cannot be used as a base URL, so no realm endpoints can
-    /// be derived from it.
-    #[snafu(display("The Keycloak server URL cannot be used as a base URL."))]
-    InvalidServerUrl,
+    /// The configured Keycloak server URL is unusable.
+    #[snafu(display("The Keycloak server URL is invalid."))]
+    InvalidServerUrl {
+        /// What is wrong with the URL.
+        source: InvalidServerUrlError,
+    },
 
     /// The initial OIDC discovery failed.
     #[snafu(display("The initial OIDC discovery failed."))]
@@ -27,6 +30,38 @@ pub enum ConnectError {
         /// The discovery or key-processing error.
         source: AuthError,
     },
+}
+
+/// A Keycloak server URL that cannot serve as a base URL, such as a `mailto:` URL, so no realm URLs
+/// can be derived from it.
+#[derive(Debug, Clone)]
+pub struct InvalidServerUrlError {
+    url: Url,
+}
+
+impl fmt::Display for InvalidServerUrlError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "'{}' cannot be used as a Keycloak server URL because it cannot serve as a base URL. \
+             Use the server's 'http' or 'https' URL, such as 'https://keycloak.example/'.",
+            self.url
+        )
+    }
+}
+
+impl std::error::Error for InvalidServerUrlError {}
+
+impl InvalidServerUrlError {
+    pub(crate) fn new(url: Url) -> Self {
+        Self { url }
+    }
+
+    /// The rejected URL.
+    #[must_use]
+    pub fn url(&self) -> &Url {
+        &self.url
+    }
 }
 
 /// Errors returned when a [`crate::validation::ValidationPolicy`] is built from inconsistent

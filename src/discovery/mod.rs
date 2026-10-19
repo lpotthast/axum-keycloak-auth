@@ -14,7 +14,7 @@ use std::{ops::Deref, sync::Arc};
 use futures::future::BoxFuture;
 use url::Url;
 
-use crate::error::AuthError;
+use crate::{error::AuthError, server_url::ServerUrl};
 
 pub(crate) use keys::{DecodingKeys, DiscoveredData};
 pub(crate) use lifecycle::Discovery;
@@ -29,15 +29,8 @@ pub(crate) use lifecycle::RefreshStateSnapshot;
 pub(crate) struct OidcDiscoveryEndpoint(pub(crate) Url);
 
 impl OidcDiscoveryEndpoint {
-    pub(crate) fn from_server_and_realm(server: Url, realm: &str) -> Self {
-        let mut url = server;
-        url.path_segments_mut()
-            .expect("URL not to be a 'cannot-be-a-base' URL. We have to append segments.")
-            // A trailing slash on the server URL (`https://host/auth/`) must not produce an empty
-            // path segment (`/auth//realms/...`).
-            .pop_if_empty()
-            .extend(&["realms", realm, ".well-known", "openid-configuration"]);
-        Self(url)
+    pub(crate) fn new(server: &ServerUrl, realm: &str) -> Self {
+        Self(server.discovery_url(realm))
     }
 }
 
@@ -68,36 +61,3 @@ pub(crate) type DiscoveryOp = Arc<
         + Send
         + Sync,
 >;
-
-#[cfg(test)]
-mod tests {
-    use assertr::prelude::*;
-    use url::Url;
-
-    use super::OidcDiscoveryEndpoint;
-
-    #[test]
-    fn discovery_endpoint_is_derived_from_server_url_with_or_without_trailing_slash() {
-        for server in [
-            "https://host",
-            "https://host/",
-            "https://host/auth",
-            "https://host/auth/",
-        ] {
-            let endpoint = OidcDiscoveryEndpoint::from_server_and_realm(
-                Url::parse(server).expect("test URL must parse"),
-                "my-realm",
-            );
-            let expected_prefix = if server.contains("auth") {
-                "https://host/auth/realms/"
-            } else {
-                "https://host/realms/"
-            };
-            assert_that!(endpoint.as_str())
-                .with_subject_name(server)
-                .is_equal_to(format!(
-                    "{expected_prefix}my-realm/.well-known/openid-configuration"
-                ));
-        }
-    }
-}

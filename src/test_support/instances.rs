@@ -65,7 +65,7 @@ pub(crate) fn offline_instance_at(server: Url, realm: &str) -> KeycloakAuthInsta
         .realm(realm.to_owned())
         .retry(TEST_RETRY)
         .build();
-    KeycloakAuthInstance::resolved_for_test(config, data)
+    KeycloakAuthInstance::resolved_for_test(&config, data)
 }
 
 /// A configuration for `provider`'s realm, using the fast test retry strategy.
