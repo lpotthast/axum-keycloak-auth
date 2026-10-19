@@ -19,8 +19,8 @@ pub(crate) enum AuthHeaderExtractError {
     #[snafu(display("The 'Authorization' header carried a blank \"Bearer \" token."))]
     EmptyBearerToken,
 
-    /// The `Authorization` header was present and used the "Bearer ..." format, but its value
-    /// could not be parsed.
+    /// The `Authorization` header was present, but its value was not visible ASCII and could not
+    /// be read as a string.
     #[snafu(display("The 'Authorization' header could not be parsed. Reason: {reason}"))]
     InvalidHeaderValue { reason: String },
 }

@@ -8,10 +8,11 @@
 //! credential source always continues to the next extractor. [`TokenExtractionErrorPolicy`]
 //! controls whether a present but unusable source continues or rejects authentication.
 //!
-//! A blank token value, meaning one that is empty or consists only of whitespace, counts as an
-//! unusable source rather than as an extracted token. `Authorization: Bearer ` and `?token=` are
-//! therefore errors, and extraction still continues past them under
-//! [`TokenExtractionErrorPolicy::Fallback`].
+//! The built-in extractors treat a blank token value, meaning one that is empty or consists only of
+//! whitespace, as an unusable source rather than as an extracted token. `Authorization: Bearer `
+//! and `?token=` are therefore errors, and extraction still continues past them under
+//! [`TokenExtractionErrorPolicy::Fallback`]. Custom extractors should likewise return an error
+//! instead of a blank token, because any returned token ends extraction.
 
 mod auth_header;
 mod policy;

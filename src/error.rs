@@ -136,7 +136,7 @@ pub enum AuthError {
 
     /// The `Authorization` header did not contain a non-blank `Bearer <token>` value.
     #[snafu(display(
-        "The 'Authorization' header did not contain the expected 'Bearer ...token' format."
+        "The 'Authorization' header did not contain a non-blank 'Bearer <token>' value."
     ))]
     MissingBearerToken,
 
