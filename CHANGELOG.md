@@ -65,8 +65,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Added `KeycloakAuthInstance::connect` and `connect_with_client` to await initial OIDC discovery and fail fast with
   `ConnectError`. An unusable server URL is reported as an `InvalidServerUrlError` naming the rejected URL.
   `connect_with_client` accepts a caller-supplied `reqwest::Client` for custom timeouts, proxies, trust roots, and mTLS.
-- Added `KeycloakAuthInstance::ready` and `operational_status`, returning the new `OperationalStatus` type, for startup
-  coordination and health reporting.
+- Added `KeycloakAuthInstance::ready` and `operational_status`, returning the new `OperationalStatus` type with the
+  latest `DiscoveryFailure`, for startup coordination and health reporting.
 - Added `TokenExtractionErrorPolicy` to control whether malformed credentials fall through to lower-priority extractors
   (`Fallback`, the default) or reject the request (`Reject`).
 - Added the `token` module as the new home for token and claim types. The deprecated `decode` module remains as a

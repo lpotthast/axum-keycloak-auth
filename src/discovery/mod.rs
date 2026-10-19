@@ -18,7 +18,7 @@ use crate::{error::AuthError, server_url::ServerUrl};
 
 pub(crate) use keys::{DecodingKeys, DiscoveredData};
 pub(crate) use lifecycle::Discovery;
-pub use lifecycle::OperationalStatus;
+pub use lifecycle::{DiscoveryFailure, OperationalStatus};
 pub(crate) use policy::RefreshPolicy;
 pub(crate) use provider::default_discovery_op;
 

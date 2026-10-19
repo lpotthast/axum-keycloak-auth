@@ -16,7 +16,7 @@ use crate::{
     validation::KeySource,
 };
 
-pub use crate::discovery::OperationalStatus;
+pub use crate::discovery::{DiscoveryFailure, OperationalStatus};
 
 /// Configuration used to derive a realm's OIDC discovery endpoint.
 #[derive(Debug, TypedBuilder)]
@@ -303,7 +303,7 @@ mod tests {
         },
     };
 
-    use super::{KeycloakAuthInstance, KeycloakConfig, OperationalStatus};
+    use super::{DiscoveryFailure, KeycloakAuthInstance, KeycloakConfig, OperationalStatus};
 
     #[tokio::test]
     async fn connect_succeeds_and_reports_an_operational_status() {
@@ -448,7 +448,10 @@ mod tests {
         assert_that!(instance.operational_status()).matches(partial!(OperationalStatus {
             is_operational: IsFalse,
             time_since_last_success: IsNone,
-            last_error: partial!(variant Some(eq("The provider returned no usable decoding keys"))),
+            last_error: partial!(variant Some(partial!(DiscoveryFailure {
+                message: eq("The provider returned no usable decoding keys"),
+                ..
+            }))),
             consecutive_failures: eq(1),
             ..
         }));

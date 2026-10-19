@@ -64,13 +64,20 @@ pub struct OperationalStatus {
     pub time_since_last_success: Option<Duration>,
     /// Time since the most recent discovery attempt started.
     pub time_since_last_attempt: Option<Duration>,
-    /// Time since the latest error, or `None` after a successful discovery with no later failure.
-    pub time_since_last_error: Option<Duration>,
-    /// Latest error including its source chain, or `None` after a successful discovery with no
-    /// later failure.
-    pub last_error: Option<String>,
+    /// The latest failure, or `None` after a successful discovery with no later failure.
+    pub last_error: Option<DiscoveryFailure>,
     /// Consecutive failed attempts since startup or the latest success.
     pub consecutive_failures: u32,
+}
+
+/// A failed OIDC discovery or key refresh, as reported by [`OperationalStatus::last_error`].
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct DiscoveryFailure {
+    /// The error, including its source chain.
+    pub message: String,
+    /// Time elapsed since the failure.
+    pub elapsed: Duration,
 }
 
 #[derive(Debug)]
@@ -497,14 +504,13 @@ impl Discovery {
             time_since_last_attempt: state
                 .last_attempted_at
                 .map(|at| now.saturating_duration_since(at)),
-            time_since_last_error: state
-                .last_error
-                .as_ref()
-                .map(|(at, _error)| now.saturating_duration_since(*at)),
             last_error: state
                 .last_error
                 .as_ref()
-                .map(|(_at, error)| error.message()),
+                .map(|(at, error)| DiscoveryFailure {
+                    message: error.message(),
+                    elapsed: now.saturating_duration_since(*at),
+                }),
             consecutive_failures: state.consecutive_failures,
         }
     }
