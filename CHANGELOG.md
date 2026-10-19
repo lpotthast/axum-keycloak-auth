@@ -41,8 +41,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   shared refresh still survives cancellation of an individual validation waiter. Attempting an on-demand refresh
   outside a Tokio runtime now panics promptly instead of deadlocking. The last successfully retrieved keys remain
   available until a later refresh succeeds.
-- Malformed `exp` and `iat` claims, and malformed `nbf` claims when `nbf` validation is enabled, now fail closed. In
-  particular, a non-integer `exp` returns `401 Unauthorized` instead of `500 Internal Server Error`.
+- Tokens with a malformed `exp` or `iat` claim are now rejected with `401 Unauthorized`, as are tokens with a malformed
+  `nbf` claim when `nbf` validation is enabled. Previously, a non-integer `exp` caused a `500 Internal Server Error`.
 - Query-parameter tokens containing invalid UTF-8 now return `401 Unauthorized` instead of panicking.
 - Empty or whitespace-only credentials no longer block lower-priority token extractors. `Authorization: Bearer ` now
   yields `MissingBearerToken`, while `?token=` yields `EmptyTokenQueryParam`.
@@ -65,7 +65,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Added `KeycloakAuthInstance::ready` and `operational_status`, returning the new `OperationalStatus` type, for startup
   coordination and health reporting.
 - Added `TokenExtractionErrorPolicy` to control whether malformed credentials fall through to lower-priority extractors
-  (`Fallback`, the default) or fail closed (`Reject`).
+  (`Fallback`, the default) or reject the request (`Reject`).
 - Added the `token` module as the new home for token and claim types. The deprecated `decode` module remains as a
   compatibility alias until the next breaking release. Rust reports the deprecation only where the module itself is
   imported, not for paths such as `decode::KeycloakToken`, so migrate those paths proactively.
