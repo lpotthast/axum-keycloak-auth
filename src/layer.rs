@@ -25,6 +25,7 @@ use super::PassthroughMode;
 /// and should be used only for short-lived debugging in a controlled environment. Neither variant
 /// logs the bearer token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum UnverifiedJwtHeaderLogging {
     /// Log only `alg`, `kid`, and `typ` at the selected severity.
     Metadata(tracing::Level),
