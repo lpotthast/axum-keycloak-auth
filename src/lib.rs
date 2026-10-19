@@ -8,6 +8,8 @@
 //! # Example
 //!
 //! ```rust,no_run
+//! use std::time::Duration;
+//!
 //! use axum::{Extension, Router, routing::get};
 //! use axum_keycloak_auth::{
 //!     PassthroughMode, Url,
@@ -31,7 +33,13 @@
 //!         .expected_issuers([config.issuer()])
 //!         .allowed_algorithms([Algorithm::RS256])
 //!         .build()?;
-//!     let instance = KeycloakAuthInstance::connect(config).await?;
+//!     let http_client = reqwest::Client::builder()
+//!         .connect_timeout(Duration::from_secs(10))
+//!         .timeout(Duration::from_secs(30))
+//!         .build()?;
+//!     let instance = KeycloakAuthInstance::builder(config)
+//!         .http_client(http_client)
+//!         .build()?;
 //!
 //!     let app: Router = Router::new().route("/protected", get(protected)).layer(
 //!         KeycloakAuthLayer::<String>::builder()
@@ -45,6 +53,10 @@
 //!     Ok(())
 //! }
 //! ```
+//!
+//! Supply the `reqwest::Client` used for discovery yourself, as above. The crate falls back to a
+//! default client today, but a future release will require one. Build it with the same `reqwest`
+//! major version as this crate.
 //!
 //! Apply the layer only to protected routes. Share one `KeycloakAuthInstance` across layers so
 //! they use one key cache and one refresh coordinator.
@@ -89,19 +101,52 @@
 //!
 //! # Key discovery and refresh
 //!
-//! [`KeycloakAuthInstance::connect`](instance::KeycloakAuthInstance::connect) waits for initial
-//! discovery and returns an error if it fails.
-//! [`KeycloakAuthInstance::new`](instance::KeycloakAuthInstance::new) starts discovery in the
-//! background instead.
+//! [`KeycloakAuthInstance::builder`](instance::KeycloakAuthInstance::builder) creates an instance
+//! with your `reqwest::Client`, starts discovery in the background, and returns immediately.
 //!
 //! Validation may request an on-demand refresh when no usable keys are cached or when no cached
 //! key can verify a token with an unknown `kid`. Refreshes are shared and rate-limited, and the
 //! last usable key set remains available after a provider failure. There is no periodic refresh.
 //! A removed key remains trusted until another refresh replaces the set or the process restarts.
 //! Changed key material under an existing `kid` does not itself trigger a refresh, so publish
-//! rotated keys under a new `kid`. Use
-//! [`KeycloakAuthInstance::operational_status`](instance::KeycloakAuthInstance::operational_status)
-//! for health reporting.
+//! rotated keys under a new `kid`.
+//!
+//! # Readiness
+//!
+//! Requests fail with `401 Unauthorized` until the instance has discovered usable keys, for
+//! example while Keycloak is still starting. Report this through a readiness check, so that a
+//! scheduler such as Kubernetes only routes traffic to the application once it can authenticate
+//! requests:
+//!
+//! ```rust
+//! use std::sync::Arc;
+//!
+//! use axum::{Router, extract::State, http::StatusCode, routing::get};
+//! use axum_keycloak_auth::instance::KeycloakAuthInstance;
+//!
+//! async fn ready(State(instance): State<Arc<KeycloakAuthInstance>>) -> StatusCode {
+//!     if instance.operational_status().is_operational {
+//!         StatusCode::OK
+//!     } else {
+//!         StatusCode::SERVICE_UNAVAILABLE
+//!     }
+//! }
+//!
+//! fn readiness_router(instance: Arc<KeycloakAuthInstance>) -> Router {
+//!     Router::new().route("/ready", get(ready)).with_state(instance)
+//! }
+//! ```
+//!
+//! Keep the readiness route outside the authentication layer, and share the same
+//! `Arc<KeycloakAuthInstance>` with the layer. Once usable keys were discovered, the instance stays
+//! operational even if a later refresh fails, so a provider outage does not take a running
+//! application out of rotation.
+//! [`OperationalStatus`](instance::OperationalStatus) also carries the latest discovery failure for
+//! health reporting.
+//!
+//! As an advanced alternative, applications that must not run at all without Keycloak can await
+//! [`KeycloakAuthInstance::wait_for_discovery`](instance::KeycloakAuthInstance::wait_for_discovery)
+//! at startup and exit on its error.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

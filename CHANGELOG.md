@@ -62,11 +62,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   List settings accept any iterable, such as `.expected_audiences(["my-api"])`.
 - Added `KeycloakConfig::issuer`, which derives a realm's token issuer (`<server>/realms/<realm>`) for
   `ValidationPolicyBuilder::expected_issuers`, handling a trailing slash on the server URL like OIDC discovery does.
-- Added `KeycloakAuthInstance::connect` and `connect_with_client` to await initial OIDC discovery and fail fast with
-  `ConnectError`. An unusable server URL is reported as an `InvalidServerUrlError` naming the rejected URL.
-  `connect_with_client` accepts a caller-supplied `reqwest::Client` for custom timeouts, proxies, trust roots, and mTLS.
-- Added `KeycloakAuthInstance::ready` and `operational_status`, returning the new `OperationalStatus` type with the
-  latest `DiscoveryFailure`, for startup coordination and health reporting.
+- Added `KeycloakAuthInstance::wait_for_discovery`, which waits for initial OIDC discovery and returns its error, for
+  applications that must not run without Keycloak. Most applications should report readiness through
+  `operational_status` instead.
+- Added `KeycloakAuthInstance::builder` to supply a custom `reqwest::Client` for timeouts, proxies, trust roots, and
+  mTLS. Its `build` reports an unusable server URL as an `InvalidServerUrlError` naming the rejected URL. Supplying a
+  client is now the documented way to create an instance, and a future release will require it.
+- Added `KeycloakAuthInstance::operational_status`, returning the new `OperationalStatus` type with the latest
+  `DiscoveryFailure`, for readiness and health reporting.
 - Added `TokenExtractionErrorPolicy` to control whether malformed credentials fall through to lower-priority extractors
   (`Fallback`, the default) or reject the request (`Reject`).
 - Added the `token` module as the new home for token and claim types. The deprecated `decode` module remains as a

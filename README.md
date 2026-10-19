@@ -27,11 +27,13 @@ restarts.
 
 ## Installation
 
-The default feature set uses `reqwest`'s default TLS backend:
+Add `reqwest` as well, to build the HTTP client the crate uses for OIDC discovery. It must be the same major version as
+the one this crate depends on (0.12). The default feature set uses `reqwest`'s default TLS backend:
 
 ```toml
 [dependencies]
 axum-keycloak-auth = "0.8.4"
+reqwest = "0.12"
 ```
 
 To use rustls instead:
@@ -39,6 +41,7 @@ To use rustls instead:
 ```toml
 [dependencies]
 axum-keycloak-auth = { version = "0.8.4", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 ```
 
 ## Usage
@@ -46,8 +49,38 @@ axum-keycloak-auth = { version = "0.8.4", default-features = false, features = [
 `KeycloakAuthInstance` manages shared OIDC discovery and decoding keys. `KeycloakAuthLayer` extracts and validates a
 token before calling protected handlers.
 
-See the [API documentation](https://docs.rs/axum-keycloak-auth) for instance construction, strict validation, custom
-claims, and token extraction.
+See the [API documentation](https://docs.rs/axum-keycloak-auth) for strict validation, custom claims, and token
+extraction.
+
+Create one instance per realm with your own `reqwest::Client`. The crate falls back to a default client today, but a
+future release will require one:
+
+```rust
+use std::time::Duration;
+
+use axum_keycloak_auth::{
+    Url,
+    instance::{KeycloakAuthInstance, KeycloakConfig},
+};
+
+pub fn keycloak_instance() -> Result<KeycloakAuthInstance, Box<dyn std::error::Error>> {
+    let config = KeycloakConfig::builder()
+        .server(Url::parse("https://keycloak.example/")?)
+        .realm(String::from("my-realm"))
+        .build();
+    let http_client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()?;
+
+    let instance = KeycloakAuthInstance::builder(config)
+        .http_client(http_client)
+        .build()?;
+    Ok(instance)
+}
+```
+
+Then protect routes with a layer using that instance:
 
 ```rust
 use axum::{Extension, Router, routing::get};
@@ -72,6 +105,34 @@ pub async fn protected(Extension(token): Extension<KeycloakToken<String>>) -> St
     format!("Authenticated subject: {}", token.subject)
 }
 ```
+
+### Readiness
+
+The instance discovers Keycloak's keys in the background, and requests fail with `401 Unauthorized` until it succeeds.
+Report this through a readiness check outside the authentication layer, so that schedulers such as Kubernetes only
+route traffic to the application once it can authenticate requests:
+
+```rust
+use std::sync::Arc;
+
+use axum::{Router, extract::State, http::StatusCode, routing::get};
+use axum_keycloak_auth::instance::KeycloakAuthInstance;
+
+async fn ready(State(instance): State<Arc<KeycloakAuthInstance>>) -> StatusCode {
+    if instance.operational_status().is_operational {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    }
+}
+
+pub fn readiness_router(instance: Arc<KeycloakAuthInstance>) -> Router {
+    Router::new().route("/ready", get(ready)).with_state(instance)
+}
+```
+
+Applications that must not run at all without Keycloak can instead await `KeycloakAuthInstance::wait_for_discovery` at
+startup. This is an advanced option. Most applications should rely on the readiness check.
 
 ### Authentication logging
 

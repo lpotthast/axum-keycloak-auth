@@ -1,4 +1,5 @@
-//! Errors returned by connection, token validation, extraction, and policy construction.
+//! Errors returned by instance construction, token validation, extraction, and policy
+//! construction.
 
 use std::{borrow::Cow, fmt, sync::Arc};
 
@@ -12,25 +13,6 @@ use snafu::Snafu;
 use url::Url;
 
 use crate::http::RequestError;
-
-/// Errors returned by [`crate::instance::KeycloakAuthInstance::connect`].
-#[derive(Debug, Snafu)]
-#[non_exhaustive]
-pub enum ConnectError {
-    /// The configured Keycloak server URL is unusable.
-    #[snafu(display("The Keycloak server URL is invalid."))]
-    InvalidServerUrl {
-        /// What is wrong with the URL.
-        source: InvalidServerUrlError,
-    },
-
-    /// The initial OIDC discovery failed.
-    #[snafu(display("The initial OIDC discovery failed."))]
-    InitialDiscovery {
-        /// The discovery or key-processing error.
-        source: AuthError,
-    },
-}
 
 /// A Keycloak server URL that cannot serve as a base URL, such as a `mailto:` URL, so no realm URLs
 /// can be derived from it.
