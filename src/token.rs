@@ -275,17 +275,41 @@ where
 
 /// Keycloak's standard user profile claims.
 #[derive(serde::Deserialize, Debug, Clone)]
+#[serde(from = "ProfileClaims")]
 pub struct Profile {
     /// Given name (`given_name`), if included in the token.
     pub given_name: Option<String>,
-    /// Display name (`name`), if included in the token. The legacy `full_name` spelling is also
-    /// accepted.
-    #[serde(rename = "name", alias = "full_name")]
+    /// Display name, read from the `full_name` claim or, if that is absent, from Keycloak's
+    /// standard `name` claim.
+    ///
+    /// `full_name` takes precedence because earlier releases read only that claim, so tokens
+    /// carrying a custom `full_name` mapper keep their established value.
     pub full_name: Option<String>,
     /// Family name (`family_name`), if included in the token.
     pub family_name: Option<String>,
     /// Preferred username (`preferred_username`).
     pub preferred_username: String,
+}
+
+/// Wire representation of [`Profile`], accepting both display-name claims at once.
+#[derive(serde::Deserialize)]
+struct ProfileClaims {
+    given_name: Option<String>,
+    name: Option<String>,
+    full_name: Option<String>,
+    family_name: Option<String>,
+    preferred_username: String,
+}
+
+impl From<ProfileClaims> for Profile {
+    fn from(claims: ProfileClaims) -> Self {
+        Self {
+            given_name: claims.given_name,
+            full_name: claims.full_name.or(claims.name),
+            family_name: claims.family_name,
+            preferred_username: claims.preferred_username,
+        }
+    }
 }
 
 /// Keycloak's standard email claims.
@@ -316,7 +340,7 @@ pub struct ProfileAndEmail {
 mod tests {
     use assertr::prelude::*;
 
-    use super::Profile;
+    use super::{Profile, ProfileAndEmail, StandardClaims};
 
     #[test]
     fn profile_full_name_reads_the_standard_name_claim_and_legacy_alias() {
@@ -332,6 +356,31 @@ mod tests {
                 .some()
                 .is_equal_to("Test User");
         }
+    }
+
+    /// Keycloak's default `profile` scope emits `name`, so tokens of deployments that also map a
+    /// `full_name` claim carry both. Earlier releases accepted these tokens and read `full_name`.
+    #[test]
+    fn profile_accepts_both_name_claims_and_prefers_full_name() {
+        let claims = serde_json::from_value::<StandardClaims<ProfileAndEmail>>(serde_json::json!({
+            "exp": 2_000_000_000,
+            "iat": 1_900_000_000,
+            "jti": "0b6f1f4e-0000-4000-8000-000000000000",
+            "iss": "https://keycloak.example/realms/test",
+            "sub": "a7060488-c80b-40c5-83e2-d7000bf9738e",
+            "typ": "Bearer",
+            "azp": "test-client",
+            "name": "Standard Name",
+            "full_name": "Mapped Full Name",
+            "preferred_username": "test-user",
+            "email": "test-user@example.com",
+            "email_verified": true,
+        }))
+        .expect("tokens carrying both name claims must deserialize");
+
+        assert_that!(claims.extra.profile.full_name)
+            .some()
+            .is_equal_to("Mapped Full Name");
     }
 
     /// The deprecated `decode` module alias must keep exposing the public token types until the

@@ -43,7 +43,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Query-parameter tokens containing invalid UTF-8 now return `401 Unauthorized` instead of panicking.
 - Empty or whitespace-only credentials no longer block lower-priority token extractors. `Authorization: Bearer ` now
   yields `MissingBearerToken`, while `?token=` yields `EmptyTokenQueryParam`.
-- `Profile::full_name` now reads Keycloak's standard `name` claim while retaining `full_name` as an alias.
+- `Profile::full_name` now falls back to Keycloak's standard `name` claim when no `full_name` claim is present. Tokens
+  carrying both claims remain accepted and keep reading `full_name`.
 - Server URLs with a trailing slash after a non-root path, such as `https://host/auth/`, now produce the correct OIDC
   discovery URL without a duplicate slash.
 
