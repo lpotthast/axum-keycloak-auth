@@ -183,8 +183,8 @@ impl ValidationPolicy {
 
     /// Runs every claim-based check of this policy against the signature-verified claims,
     /// measured against the single captured validation time. Expiry runs before the audience
-    /// check to preserve the historical error identity of expired tokens. All further checks can
-    /// only reject what the plain legacy preset never rejected.
+    /// check to preserve the historical error identity of expired tokens. The checks after expiry
+    /// only add rejections, and they accept every token under the plain legacy preset.
     pub(crate) fn check_claims(
         &self,
         claims: &RawClaims,

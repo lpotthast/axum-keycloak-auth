@@ -68,10 +68,10 @@
 //! # Validation
 //!
 //! The default [`ValidationPolicy::legacy`](validation::ValidationPolicy::legacy) preset preserves
-//! the validation behavior of earlier releases. For new deployments,
+//! the acceptance rules of earlier releases. For new deployments,
 //! [`ValidationPolicy::strict`](validation::ValidationPolicy::strict) requires issuer and audience
 //! checks, restricts signature algorithms, requires a `Bearer` payload token type, and validates
-//! `nbf` and future `iat` values. See [`validation`] for the exact preset behavior.
+//! `nbf` and future `iat` values. The documentation of both presets lists their exact behavior.
 //!
 //! [`KeycloakAuthLayer::validate_raw_token`](layer::KeycloakAuthLayer::validate_raw_token) applies
 //! the same validation outside the middleware.

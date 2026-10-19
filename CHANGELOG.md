@@ -66,7 +66,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Added `TokenExtractionErrorPolicy` to control whether malformed credentials fall through to lower-priority extractors
   (`Fallback`, the default) or fail closed (`Reject`).
 - Added the `token` module as the new home for token and claim types. The deprecated `decode` module remains as a
-  compatibility alias until the next breaking release.
+  compatibility alias until the next breaking release. Rust reports the deprecation only where the module itself is
+  imported, not for paths such as `decode::KeycloakToken`, so migrate those paths proactively.
 - Added `dangerously_log_raw_claims(level)` for explicitly logging complete signature- and policy-validated raw JWT
   claims, including personal data, at a chosen severity. Omitting it disables the event. Typed-claim or role validation
   may still reject a request after the claims are logged, and this setting must not be enabled in production.
