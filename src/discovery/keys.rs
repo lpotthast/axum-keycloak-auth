@@ -6,6 +6,8 @@
 
 use std::{fmt::Debug, sync::Arc};
 
+use jsonwebtoken::jwk::{AlgorithmParameters, Jwk, PublicKeyUse};
+
 use crate::oidc::OidcConfig;
 
 /// Every usable key in provider order, tagged with the provider key ID it was published under.
@@ -20,6 +22,13 @@ impl IndexedDecodingKeys {
     fn from_jwks(jwk_set: &jsonwebtoken::jwk::JwkSet) -> Self {
         let mut keys = Vec::new();
         for jwk in &jwk_set.keys {
+            if !is_signature_verification_key(jwk) {
+                tracing::debug!(
+                    kid = ?jwk.common.key_id,
+                    "Ignoring a JWK that is symmetric or published for encryption."
+                );
+                continue;
+            }
             match jsonwebtoken::DecodingKey::from_jwk(jwk) {
                 Ok(decoding_key) => keys.push((jwk.common.key_id.clone(), decoding_key)),
                 Err(err) => {
@@ -67,6 +76,14 @@ impl IndexedDecodingKeys {
             .filter(move |(key_id, _key)| key_id.as_deref() != Some(kid))
             .map(|(_key_id, key)| key)
     }
+}
+
+/// Whether `jwk` may verify token signatures. A symmetric `oct` key in a published JWKS would let
+/// anyone who can read the set forge tokens, and keys published for encryption (`use: enc`) are
+/// not signature keys.
+fn is_signature_verification_key(jwk: &Jwk) -> bool {
+    !matches!(jwk.algorithm, AlgorithmParameters::OctetKey(_))
+        && jwk.common.public_key_use != Some(PublicKeyUse::Encryption)
 }
 
 pub(crate) struct DiscoveredData {
@@ -143,7 +160,10 @@ impl DecodingKeys {
 #[cfg(test)]
 mod tests {
     use assertr::prelude::*;
-    use jsonwebtoken::{Algorithm, jwk::JwkSet};
+    use jsonwebtoken::{
+        Algorithm,
+        jwk::{Jwk, JwkSet, PublicKeyUse},
+    };
 
     use crate::test_support::{RSA_KEY_A, RSA_KEY_B};
 
@@ -163,5 +183,30 @@ mod tests {
             .some()
             .is_equal_to(2);
         assert_that!(keys.all_except("shared-kid").count()).is_equal_to(1);
+    }
+
+    #[test]
+    fn symmetric_and_encryption_keys_are_never_used_for_verification() {
+        let symmetric: Jwk = serde_json::from_value(serde_json::json!({
+            "kty": "oct",
+            "kid": "symmetric",
+            "k": "c3ltbWV0cmljLXNlY3JldA",
+        }))
+        .expect("the symmetric JWK must deserialize");
+        let mut encryption = RSA_KEY_B.jwk(Some("encryption"), Algorithm::RS256);
+        encryption.common.public_key_use = Some(PublicKeyUse::Encryption);
+
+        let keys = IndexedDecodingKeys::from_jwks(&JwkSet {
+            keys: vec![
+                symmetric,
+                encryption,
+                RSA_KEY_A.jwk(Some("signature"), Algorithm::RS256),
+            ],
+        });
+
+        assert_that!(keys.len()).is_equal_to(1);
+        assert_that!(keys.exact("signature").map(Iterator::count))
+            .some()
+            .is_equal_to(1);
     }
 }

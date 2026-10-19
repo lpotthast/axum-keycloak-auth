@@ -26,6 +26,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `UnverifiedJwtHeaderLogging::Complete(level)` explicitly opts into the full attacker-controlled header.
 - Added regression coverage ensuring a token cannot use its header to select an incompatible verification algorithm,
   such as treating asymmetric key material as an HMAC secret. Released versions were not affected.
+- Symmetric (`kty: oct`) JWKs and JWKs published for encryption (`use: enc`) are no longer used to verify token
+  signatures. A symmetric key in a published JWKS would let anyone who can read it forge tokens.
 
 ### Fixed
 
