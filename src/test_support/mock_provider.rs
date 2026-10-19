@@ -1,5 +1,8 @@
 //! An in-process mock OIDC provider: a discovery document and a JWKS endpoint whose responses a
 //! test controls (key sets, failures, gated responses), with per-endpoint request counters.
+//!
+//! Use it to exercise real HTTP discovery. Prefer the offline fixtures in [`super::instances`] and
+//! [`super::StaticKeySource`] whenever a test does not need provider I/O.
 
 use std::sync::{
     Arc,
@@ -23,6 +26,8 @@ use tokio::{
 };
 use url::Url;
 
+use super::{TEST_REALM, wait_until};
+
 /// Blocks a mock response until released, so a test can observe requests waiting on a refresh.
 #[derive(Debug, Clone)]
 pub(crate) struct ResponseGate {
@@ -30,12 +35,14 @@ pub(crate) struct ResponseGate {
 }
 
 impl ResponseGate {
+    /// A gate that holds every response until [`Self::release`] is called.
     pub(crate) fn closed() -> Self {
         Self {
             permits: Arc::new(Semaphore::new(0)),
         }
     }
 
+    /// Lets one held response through.
     pub(crate) fn release(&self) {
         self.permits.add_permits(1);
     }
@@ -46,11 +53,12 @@ impl ResponseGate {
             .clone()
             .acquire_owned()
             .await
-            .unwrap_or_else(|err| panic!("mock response gate closed unexpectedly: {err}"));
+            .expect("the mock response gate must not be closed");
         permit.forget();
     }
 }
 
+/// A canned HTTP response served by a [`MockOidcServer`] endpoint.
 #[derive(Debug, Clone)]
 pub(crate) struct MockResponse {
     status: StatusCode,
@@ -60,6 +68,7 @@ pub(crate) struct MockResponse {
 }
 
 impl MockResponse {
+    /// `200 OK` with `value` as a JSON body.
     pub(crate) fn json(value: &Value) -> Self {
         Self {
             status: StatusCode::OK,
@@ -67,12 +76,12 @@ impl MockResponse {
                 axum::http::header::CONTENT_TYPE,
                 HeaderValue::from_static("application/json"),
             )]),
-            body: serde_json::to_vec(value)
-                .unwrap_or_else(|err| panic!("mock JSON response must serialize: {err}")),
+            body: serde_json::to_vec(value).expect("a mock JSON response must serialize"),
             gate: None,
         }
     }
 
+    /// `status` with a raw body and no content type.
     pub(crate) fn text(status: StatusCode, body: impl Into<Vec<u8>>) -> Self {
         Self {
             status,
@@ -82,6 +91,7 @@ impl MockResponse {
         }
     }
 
+    /// Holds this response until `gate` is released.
     pub(crate) fn with_gate(mut self, gate: ResponseGate) -> Self {
         self.gate = Some(gate);
         self
@@ -142,8 +152,8 @@ async fn jwks(State(state): State<ProviderState>) -> Response {
     state.jwks.respond().await
 }
 
-/// The mock provider. Serves an empty JWKS until [`MockOidcServer::set_jwks`] is called, and shuts
-/// down when dropped.
+/// The mock provider, serving the realm [`TEST_REALM`] on a random local port. Serves an empty
+/// JWKS until [`MockOidcServer::set_jwks`] is called, and shuts down when dropped.
 #[derive(Debug)]
 pub(crate) struct MockOidcServer {
     server_url: Url,
@@ -154,16 +164,17 @@ pub(crate) struct MockOidcServer {
 }
 
 impl MockOidcServer {
+    /// Starts serving in a background task of the current Tokio runtime.
     pub(crate) async fn start() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
-            .unwrap_or_else(|err| panic!("mock OIDC listener must bind: {err}"));
+            .expect("the mock OIDC listener must bind");
         let address = listener
             .local_addr()
-            .unwrap_or_else(|err| panic!("mock OIDC listener must have an address: {err}"));
-        let server_url = Url::parse(&format!("http://{address}/"))
-            .unwrap_or_else(|err| panic!("mock OIDC server URL must parse: {err}"));
-        let realm = String::from("test-realm");
+            .expect("the mock OIDC listener must have an address");
+        let server_url =
+            Url::parse(&format!("http://{address}/")).expect("the mock OIDC server URL must parse");
+        let realm = String::from(TEST_REALM);
         let issuer = issuer_url(&server_url, &realm);
         let jwks_url = jwks_url(&server_url);
 
@@ -198,27 +209,32 @@ impl MockOidcServer {
         }
     }
 
+    /// The base URL to configure as [`crate::instance::KeycloakConfig::server`].
     pub(crate) fn server_url(&self) -> Url {
         self.server_url.clone()
     }
 
+    /// The served realm name.
     pub(crate) fn realm(&self) -> &str {
         &self.realm
     }
 
+    /// The URL of the realm's discovery document.
     pub(crate) fn discovery_url(&self) -> Url {
         self.server_url
             .join(&format!(
                 "realms/{}/.well-known/openid-configuration",
                 self.realm
             ))
-            .unwrap_or_else(|err| panic!("mock discovery URL must join: {err}"))
+            .expect("the mock discovery URL must join")
     }
 
+    /// The URL of the realm's JWKS, as advertised by the discovery document.
     pub(crate) fn jwks_url(&self) -> Url {
         jwks_url(&self.server_url)
     }
 
+    /// Replaces the discovery response until the next change.
     pub(crate) async fn set_discovery_response(&self, response: MockResponse) {
         self.state.discovery.set(response).await;
     }
@@ -233,10 +249,12 @@ impl MockOidcServer {
         .await;
     }
 
+    /// Replaces the JWKS response until the next change.
     pub(crate) async fn set_jwks_response(&self, response: MockResponse) {
         self.state.jwks.set(response).await;
     }
 
+    /// Publishes exactly `keys` as the JWKS.
     pub(crate) async fn set_jwks(&self, keys: Vec<Jwk>) {
         self.set_jwks_response(Self::jwks_json(keys)).await;
     }
@@ -262,25 +280,24 @@ impl MockOidcServer {
 
     /// Waits until this provider has received at least `expected` JWKS requests.
     pub(crate) async fn wait_for_jwks_requests(&self, expected: usize) {
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while self.jwks_requests() < expected {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("the mock provider must receive the expected JWKS requests");
+        wait_until(
+            &format!("the mock provider must receive {expected} JWKS requests"),
+            || self.jwks_requests() >= expected,
+        )
+        .await;
     }
 
     fn jwks_json(keys: Vec<Jwk>) -> MockResponse {
-        let value = serde_json::to_value(JwkSet { keys })
-            .unwrap_or_else(|err| panic!("mock JWKS must serialize: {err}"));
+        let value = serde_json::to_value(JwkSet { keys }).expect("a mock JWKS must serialize");
         MockResponse::json(&value)
     }
 
+    /// How many discovery requests were received, including gated ones still waiting.
     pub(crate) fn discovery_requests(&self) -> usize {
         self.state.discovery.request_count()
     }
 
+    /// How many JWKS requests were received, including gated ones still waiting.
     pub(crate) fn jwks_requests(&self) -> usize {
         self.state.jwks.request_count()
     }
@@ -298,20 +315,20 @@ impl Drop for MockOidcServer {
 fn issuer_url(server_url: &Url, realm: &str) -> Url {
     server_url
         .join(&format!("realms/{realm}"))
-        .unwrap_or_else(|err| panic!("mock issuer URL must join: {err}"))
+        .expect("the mock issuer URL must join")
 }
 
 fn jwks_url(server_url: &Url) -> Url {
     server_url
         .join("jwks")
-        .unwrap_or_else(|err| panic!("mock JWKS URL must join: {err}"))
+        .expect("the mock JWKS URL must join")
 }
 
 /// A minimal discovery document satisfying the canonical [`crate::oidc::OidcConfig`] contract.
 pub(super) fn discovery_document(issuer: &Url, jwks_url: &Url) -> Value {
     let realm_endpoint = |path: &str| {
         Url::parse(&format!("{issuer}/protocol/openid-connect/{path}"))
-            .unwrap_or_else(|err| panic!("mock realm endpoint must parse: {err}"))
+            .expect("a mock realm endpoint must parse")
     };
     json!({
         "issuer": issuer,
@@ -322,4 +339,85 @@ pub(super) fn discovery_document(issuer: &Url, jwks_url: &Url) -> Value {
         "subject_types_supported": ["public"],
         "id_token_signing_alg_values_supported": ["RS256"]
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use assertr::prelude::*;
+    use axum::http::StatusCode;
+    use jsonwebtoken::Algorithm;
+    use serde_json::Value;
+
+    use crate::test_support::{RSA_KEY_A, RSA_KEY_B, within_test_timeout};
+
+    use super::{MockOidcServer, MockResponse, ResponseGate};
+
+    async fn get_json(url: url::Url) -> Value {
+        reqwest::get(url)
+            .await
+            .expect("the mock request must succeed")
+            .json::<Value>()
+            .await
+            .expect("the mock response must be JSON")
+    }
+
+    #[tokio::test]
+    async fn serves_discovery_and_rotating_jwks() {
+        let server = MockOidcServer::start().await;
+        server
+            .set_jwks(vec![RSA_KEY_A.jwk(Some("key-a"), Algorithm::RS256)])
+            .await;
+
+        assert_that!(get_json(server.discovery_url()).await)
+            .pointer("/jwks_uri")
+            .is_equal_to(server.jwks_url().as_str());
+        assert_that!(get_json(server.jwks_url()).await)
+            .pointer("/keys/0/kid")
+            .is_equal_to("key-a");
+
+        server
+            .set_jwks(vec![RSA_KEY_B.jwk(Some("key-b"), Algorithm::RS512)])
+            .await;
+        assert_that!(get_json(server.jwks_url()).await)
+            .pointer("/keys/0/kid")
+            .is_equal_to("key-b");
+        assert_that!(server.discovery_requests()).is_equal_to(1);
+        assert_that!(server.jwks_requests()).is_equal_to(2);
+    }
+
+    #[tokio::test]
+    async fn controls_failures_and_gating() {
+        let server = MockOidcServer::start().await;
+
+        server.make_discovery_unavailable().await;
+        let failed = reqwest::get(server.discovery_url())
+            .await
+            .expect("the failure response must be received");
+        assert_that!(failed.status()).is_equal_to(StatusCode::SERVICE_UNAVAILABLE);
+        server.restore_discovery_response().await;
+        let recovered = reqwest::get(server.discovery_url())
+            .await
+            .expect("the restored response must be received");
+        assert_that!(recovered.status()).is_equal_to(StatusCode::OK);
+
+        // A gated response blocks until released.
+        let gate = ResponseGate::closed();
+        server
+            .set_jwks_response(
+                MockResponse::text(StatusCode::OK, "malformed-json").with_gate(gate.clone()),
+            )
+            .await;
+        let gated_request = tokio::spawn(reqwest::get(server.jwks_url()));
+        server.wait_for_jwks_requests(1).await;
+        assert_that!(gated_request.is_finished()).is_false();
+        gate.release();
+        let gated_response =
+            within_test_timeout("the released JWKS request must finish", gated_request)
+                .await
+                .expect("the gated request task must not panic")
+                .expect("the gated request must complete");
+        assert_that!(gated_response.text().await)
+            .ok()
+            .is_equal_to("malformed-json");
+    }
 }

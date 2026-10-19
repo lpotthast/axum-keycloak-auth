@@ -174,16 +174,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{convert::Infallible, sync::Arc};
+    use std::convert::Infallible;
 
     use assertr::prelude::*;
     use axum::{
-        body::{Body, to_bytes},
-        http::{
-            Request, StatusCode,
-            header::{AUTHORIZATION, WWW_AUTHENTICATE},
-        },
-        response::IntoResponse,
+        body::Body,
+        http::{Request, StatusCode, header::WWW_AUTHENTICATE},
+        response::{IntoResponse, Response},
     };
     use jsonwebtoken::Algorithm;
     use serde_json::{Value, json};
@@ -191,15 +188,20 @@ mod tests {
 
     use crate::{
         KeycloakAuthStatus, PassthroughMode,
-        layer::KeycloakAuthLayer,
         test_support::{
-            CapturedLogs, ManualClock, RSA_KEY_A, assert_logged_iff, keycloak_claims,
-            offline_instance, validation_time,
+            CapturedLogs, RSA_KEY_A, TEST_KID, anonymous_request, assert_logged_iff,
+            bearer_request, keycloak_claims, offline_layer, response_text, signed_token,
+            validation_time,
         },
         token::{KeycloakToken, RawClaims},
     };
 
     use super::KeycloakAuthService;
+
+    /// An inner service accepting every request that reaches it.
+    async fn no_content(_request: Request<Body>) -> Result<Response, Infallible> {
+        Ok(StatusCode::NO_CONTENT.into_response())
+    }
 
     #[tokio::test]
     async fn authentication_error_logging_is_opt_in_and_uses_the_configured_level() {
@@ -209,45 +211,24 @@ mod tests {
             (Some(tracing::Level::INFO), PassthroughMode::Block),
             (Some(tracing::Level::WARN), PassthroughMode::Pass),
         ] {
-            let now = validation_time();
-            let mut layer = KeycloakAuthLayer::<String, Value>::builder()
-                .instance(offline_instance(
-                    url::Url::parse("https://issuer.example/")
-                        .expect("the test issuer URL must parse"),
-                    String::from("test-realm"),
-                ))
-                .passthrough_mode(passthrough_mode)
-                .expected_audiences(vec![String::from("account")])
-                .build()
-                .with_clock(Arc::new(ManualClock::new(now)));
+            let mut layer = offline_layer();
+            layer.passthrough_mode = passthrough_mode;
             layer.dangerously_log_authentication_errors = authentication_error_log_level;
-            let inner = tower::service_fn(|_request: Request<Body>| async {
-                Ok::<_, Infallible>(StatusCode::NO_CONTENT.into_response())
-            });
-            let mut service = KeycloakAuthService::new(inner, &layer);
+            let mut service = KeycloakAuthService::new(tower::service_fn(no_content), &layer);
 
+            let now = validation_time();
             let mut claims = keycloak_claims(now);
             claims.insert(String::from("exp"), json!(now.unix_timestamp() - 60));
             claims.insert(String::from("iat"), json!({ "malformed": true }));
             let token = RSA_KEY_A
-                .sign(&claims, Algorithm::RS256, Some("key-a"))
+                .sign(&claims, Algorithm::RS256, Some(TEST_KID))
                 .expect("the malformed-claims test token must sign");
-            let request = Request::builder()
-                .header(AUTHORIZATION, format!("Bearer {token}"))
-                .body(Body::empty())
-                .expect("the test request must build");
 
             let logs = CapturedLogs::default();
-            let subscriber = tracing_subscriber::fmt()
-                .without_time()
-                .with_ansi(false)
-                .with_max_level(tracing::Level::TRACE)
-                .with_writer(logs.clone())
-                .finish();
             let response = {
-                let _default = tracing::subscriber::set_default(subscriber);
+                let _capture = logs.capture();
                 service
-                    .call(request)
+                    .call(bearer_request(&token))
                     .await
                     .expect("authentication middleware must not fail as a service")
             };
@@ -260,12 +241,8 @@ mod tests {
                         .some()
                         .ascii()
                         .is_equal_to("Bearer error=\"invalid_token\"");
-                    let body = to_bytes(response.into_body(), 1024)
-                        .await
-                        .expect("the JSON response body must be readable");
-                    let body =
-                        std::str::from_utf8(&body).expect("the JSON response body must be UTF-8");
-                    assert_that!(body).is_equal_to(r#"{"error":"invalid_token"}"#);
+                    assert_that!(response_text(response).await)
+                        .is_equal_to(r#"{"error":"invalid_token"}"#);
                 }
                 PassthroughMode::Pass => {
                     assert_that!(response.status()).is_equal_to(StatusCode::NO_CONTENT);
@@ -305,18 +282,9 @@ mod tests {
     #[tokio::test]
     async fn successful_authentication_inserts_the_mode_specific_extensions() {
         for passthrough_mode in [PassthroughMode::Block, PassthroughMode::Pass] {
-            let now = validation_time();
-            let layer = KeycloakAuthLayer::<String, Value>::builder()
-                .instance(offline_instance(
-                    url::Url::parse("https://issuer.example/")
-                        .expect("the test issuer URL must parse"),
-                    String::from("test-realm"),
-                ))
-                .passthrough_mode(passthrough_mode)
-                .expected_audiences(vec![String::from("account")])
-                .persist_raw_claims(true)
-                .build()
-                .with_clock(Arc::new(ManualClock::new(now)));
+            let mut layer = offline_layer();
+            layer.passthrough_mode = passthrough_mode;
+            layer.persist_raw_claims = true;
             let inner = tower::service_fn(move |request: Request<Body>| async move {
                 let extensions = request.extensions();
                 let token_present = match passthrough_mode {
@@ -336,16 +304,9 @@ mod tests {
                 Ok::<_, Infallible>(status.into_response())
             });
             let mut service = KeycloakAuthService::new(inner, &layer);
-            let token = RSA_KEY_A
-                .sign(&keycloak_claims(now), Algorithm::RS256, Some("key-a"))
-                .expect("the valid test token must sign");
-            let request = Request::builder()
-                .header(AUTHORIZATION, format!("Bearer {token}"))
-                .body(Body::empty())
-                .expect("the test request must build");
 
             let response = service
-                .call(request)
+                .call(bearer_request(&signed_token(&RSA_KEY_A, Some(TEST_KID))))
                 .await
                 .expect("authentication middleware must not fail as a service");
 
@@ -360,51 +321,23 @@ mod tests {
         const MISSING_ROLE: &str = "sensitive-administrator-role";
 
         for authentication_error_log_level in [None, Some(tracing::Level::DEBUG)] {
-            let now = validation_time();
-            let mut layer = KeycloakAuthLayer::<String, Value>::builder()
-                .instance(offline_instance(
-                    url::Url::parse("https://issuer.example/")
-                        .expect("the test issuer URL must parse"),
-                    String::from("test-realm"),
-                ))
-                .expected_audiences(vec![String::from("account")])
-                .required_roles(vec![String::from(MISSING_ROLE)])
-                .build()
-                .with_clock(Arc::new(ManualClock::new(now)));
+            let mut layer = offline_layer();
+            layer.required_roles = vec![String::from(MISSING_ROLE)];
             layer.dangerously_log_authentication_errors = authentication_error_log_level;
-            let inner = tower::service_fn(|_request: Request<Body>| async {
-                Ok::<_, Infallible>(StatusCode::NO_CONTENT.into_response())
-            });
-            let mut service = KeycloakAuthService::new(inner, &layer);
-            let token = RSA_KEY_A
-                .sign(&keycloak_claims(now), Algorithm::RS256, Some("key-a"))
-                .expect("the missing-role test token must sign");
-            let request = Request::builder()
-                .header(AUTHORIZATION, format!("Bearer {token}"))
-                .body(Body::empty())
-                .expect("the test request must build");
-            let logs = CapturedLogs::default();
-            let subscriber = tracing_subscriber::fmt()
-                .without_time()
-                .with_ansi(false)
-                .with_max_level(tracing::Level::TRACE)
-                .with_writer(logs.clone())
-                .finish();
+            let mut service = KeycloakAuthService::new(tower::service_fn(no_content), &layer);
+            let token = signed_token(&RSA_KEY_A, Some(TEST_KID));
 
+            let logs = CapturedLogs::default();
             let response = {
-                let _default = tracing::subscriber::set_default(subscriber);
+                let _capture = logs.capture();
                 service
-                    .call(request)
+                    .call(bearer_request(&token))
                     .await
                     .expect("authentication middleware must not fail as a service")
             };
 
             assert_that!(response.status()).is_equal_to(StatusCode::FORBIDDEN);
-            let body = to_bytes(response.into_body(), 1024)
-                .await
-                .expect("the JSON response body must be readable");
-            let body = std::str::from_utf8(&body).expect("the JSON response body must be UTF-8");
-            assert_that!(body)
+            assert_that!(response_text(response).await)
                 .is_equal_to(r#"{"error":"Missing expected role"}"#)
                 .does_not_contain(MISSING_ROLE);
 
@@ -436,35 +369,16 @@ mod tests {
             (None, Some(tracing::Level::WARN)),
             (Some(tracing::Level::INFO), Some(tracing::Level::WARN)),
         ] {
-            let mut layer = KeycloakAuthLayer::<String, Value>::builder()
-                .instance(offline_instance(
-                    url::Url::parse("https://issuer.example/")
-                        .expect("the test issuer URL must parse"),
-                    String::from("test-realm"),
-                ))
-                .expected_audiences(vec![String::from("account")])
-                .build();
+            let mut layer = offline_layer();
             layer.dangerously_log_token_extraction_errors = token_extraction_error_log_level;
             layer.dangerously_log_authentication_errors = authentication_error_log_level;
-            let inner = tower::service_fn(|_request: Request<Body>| async {
-                Ok::<_, Infallible>(StatusCode::NO_CONTENT.into_response())
-            });
-            let mut service = KeycloakAuthService::new(inner, &layer);
-            let request = Request::builder()
-                .body(Body::empty())
-                .expect("the test request must build");
-            let logs = CapturedLogs::default();
-            let subscriber = tracing_subscriber::fmt()
-                .without_time()
-                .with_ansi(false)
-                .with_max_level(tracing::Level::TRACE)
-                .with_writer(logs.clone())
-                .finish();
+            let mut service = KeycloakAuthService::new(tower::service_fn(no_content), &layer);
 
+            let logs = CapturedLogs::default();
             let response = {
-                let _default = tracing::subscriber::set_default(subscriber);
+                let _capture = logs.capture();
                 service
-                    .call(request)
+                    .call(anonymous_request())
                     .await
                     .expect("authentication middleware must not fail as a service")
             };

@@ -254,7 +254,10 @@ mod tests {
 
     use crate::{
         error::{AuthError, ConnectError},
-        test_support::{MockOidcServer, MockResponse, RSA_KEY_A, config_for},
+        test_support::{
+            MockOidcServer, MockResponse, RSA_KEY_A, TEST_KID, TEST_REALM, config_for,
+            within_test_timeout,
+        },
     };
 
     use super::{KeycloakAuthInstance, KeycloakConfig, OperationalStatus};
@@ -263,7 +266,7 @@ mod tests {
     async fn connect_succeeds_and_reports_an_operational_status() {
         let provider = MockOidcServer::start().await;
         provider
-            .set_jwks(vec![RSA_KEY_A.jwk(Some("key-a"), Algorithm::RS256)])
+            .set_jwks(vec![RSA_KEY_A.jwk(Some(TEST_KID), Algorithm::RS256)])
             .await;
 
         let instance = KeycloakAuthInstance::connect(config_for(&provider))
@@ -285,7 +288,7 @@ mod tests {
     async fn connect_rejects_a_server_url_that_cannot_be_a_base() {
         let config = KeycloakConfig::builder()
             .server(url::Url::parse("mailto:admin@example.com").expect("mailto URL must parse"))
-            .realm(String::from("test-realm"))
+            .realm(String::from(TEST_REALM))
             .build();
 
         assert_that!(KeycloakAuthInstance::connect(config).await)
@@ -354,9 +357,11 @@ mod tests {
         provider.make_discovery_unavailable().await;
         let instance = KeycloakAuthInstance::new(config_for(&provider));
 
-        tokio::time::timeout(std::time::Duration::from_secs(2), instance.ready())
-            .await
-            .expect("ready must return after the initial discovery attempt terminated");
+        within_test_timeout(
+            "ready must return after the initial discovery attempt terminated",
+            instance.ready(),
+        )
+        .await;
 
         assert_that!(instance.is_operational().await).is_false();
         assert_that!(instance.operational_status().await).matches(partial!(OperationalStatus {

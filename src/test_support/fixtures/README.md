@@ -27,5 +27,6 @@ JWK metadata. Consequently, each run intentionally produces different keys. Revi
 six changed `rsa_*`/`ec_*` `.pem` and `.jwk.json` files together.
 
 Two unit tests verify that the generated public JWKs match their respective private keys:
-`test_support::tests::jwt_helpers_control_claims_algorithm_kid_and_key` for the RSA fixtures and
-`test_support::tests::ec_fixture_jwk_matches_its_private_key_and_public_point` for the EC one.
+`test_support::keys::tests::rsa_fixtures_control_claims_algorithm_kid_and_key` for the RSA fixtures
+and `test_support::keys::tests::ec_fixture_jwk_matches_its_private_key_and_public_point` for the EC
+one.

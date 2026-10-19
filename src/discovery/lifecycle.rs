@@ -590,8 +590,9 @@ mod tests {
         discovery::default_discovery_op,
         http::default_http_client,
         test_support::{
-            ManualClock, MockOidcServer, RSA_KEY_A, RSA_KEY_B, refresh_policy_without_jitter,
-            static_discovered_data, validation_time,
+            ManualClock, MockOidcServer, RSA_KEY_A, RSA_KEY_B, TEST_REALM,
+            refresh_policy_without_jitter, static_discovered_data, test_server_url, wait_until,
+            within_test_timeout,
         },
     };
 
@@ -622,10 +623,17 @@ mod tests {
             (1, 0),
         );
         let discovery = Discovery::new(endpoint, op, uuid::Uuid::from_u128(1), clock, policy);
-        tokio::time::timeout(Duration::from_secs(2), discovery.wait_for_completion(1))
-            .await
-            .expect("the initial discovery attempt must terminate within the test timeout");
+        within_test_timeout(
+            "the initial discovery attempt must terminate",
+            discovery.wait_for_completion(1),
+        )
+        .await;
         discovery
+    }
+
+    /// The discovery endpoint of the offline fixture realm, which is never contacted.
+    fn fixture_endpoint() -> OidcDiscoveryEndpoint {
+        OidcDiscoveryEndpoint::from_server_and_realm(test_server_url(), TEST_REALM)
     }
 
     fn key_a() -> jsonwebtoken::jwk::Jwk {
@@ -640,7 +648,7 @@ mod tests {
     async fn successful_refresh_cooldown_uses_the_exact_deadline() {
         let provider = MockOidcServer::start().await;
         provider.set_jwks(vec![key_a()]).await;
-        let clock = Arc::new(ManualClock::new(validation_time()));
+        let clock = ManualClock::at_validation_time();
         let discovery =
             discovery_against(&provider, clock.clone(), refresh_policy_without_jitter()).await;
 
@@ -663,7 +671,7 @@ mod tests {
     async fn failed_refresh_backoff_grows_and_resets_after_success() {
         let provider = MockOidcServer::start().await;
         provider.set_jwks(vec![key_a()]).await;
-        let clock = Arc::new(ManualClock::new(validation_time()));
+        let clock = ManualClock::at_validation_time();
         let discovery =
             discovery_against(&provider, clock.clone(), refresh_policy_without_jitter()).await;
         provider.make_discovery_unavailable().await;
@@ -713,16 +721,19 @@ mod tests {
 
         // The capped wait reports no newer generation instead of hanging on the gated provider,
         // so a request degrades to the current key set; the refresh itself continues detached.
-        let refreshed =
-            tokio::time::timeout(Duration::from_secs(2), discovery.refresh_if_needed(1))
-                .await
-                .expect("a capped refresh wait must return instead of hanging");
+        let refreshed = within_test_timeout(
+            "a capped refresh wait must return instead of hanging",
+            discovery.refresh_if_needed(1),
+        )
+        .await;
         assert_that!(refreshed).is_false();
 
         gate.release();
-        tokio::time::timeout(Duration::from_secs(2), discovery.wait_for_completion(2))
-            .await
-            .expect("the detached refresh must terminate after the gate opens");
+        within_test_timeout(
+            "the detached refresh must terminate after the gate opens",
+            discovery.wait_for_completion(2),
+        )
+        .await;
         assert_that!(discovery.decoding_keys().exact("key-b")).is_some();
     }
 
@@ -742,9 +753,11 @@ mod tests {
 
         waiting_caller.abort();
         gate.release();
-        tokio::time::timeout(Duration::from_secs(2), discovery.wait_for_completion(2))
-            .await
-            .expect("the detached refresh must terminate after its caller was cancelled");
+        within_test_timeout(
+            "the detached refresh must terminate after its caller was cancelled",
+            discovery.wait_for_completion(2),
+        )
+        .await;
 
         assert_that!(discovery.decoding_keys().exact("key-b")).is_some();
         assert_that!(provider.discovery_requests()).is_equal_to(2);
@@ -753,8 +766,7 @@ mod tests {
 
     #[tokio::test]
     async fn dropping_discovery_cancels_its_in_flight_operation() {
-        let server = url::Url::parse("https://issuer.example/").expect("test URL must parse");
-        let endpoint = OidcDiscoveryEndpoint::from_server_and_realm(server, "test-realm");
+        let endpoint = fixture_endpoint();
         let operation_dropped = Arc::new(AtomicBool::new(false));
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let started_tx = Arc::new(Mutex::new(Some(started_tx)));
@@ -789,21 +801,18 @@ mod tests {
 
         drop(discovery);
 
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while !operation_dropped.load(Ordering::SeqCst) {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("dropping the last discovery owner must cancel the in-flight operation");
+        wait_until(
+            "dropping the last discovery owner must cancel the in-flight operation",
+            || operation_dropped.load(Ordering::SeqCst),
+        )
+        .await;
     }
 
     #[test]
     fn refresh_recovers_after_its_originating_runtime_is_destroyed() {
-        let server = url::Url::parse("https://issuer.example/").expect("test URL must parse");
-        let endpoint = OidcDiscoveryEndpoint::from_server_and_realm(server.clone(), "test-realm");
-        let data = Arc::new(static_discovered_data(&server, "test-realm"));
-        let clock = Arc::new(ManualClock::new(validation_time()));
+        let endpoint = fixture_endpoint();
+        let data = Arc::new(static_discovered_data());
+        let clock = ManualClock::at_validation_time();
         let requests = Arc::new(AtomicUsize::new(0));
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let started_tx = Arc::new(Mutex::new(Some(started_tx)));
@@ -877,10 +886,7 @@ mod tests {
 
     #[tokio::test]
     async fn panicking_discovery_terminates_waiters_and_keeps_stale_data() {
-        let server = url::Url::parse("https://issuer.example/").expect("test URL must parse");
-        let endpoint = OidcDiscoveryEndpoint::from_server_and_realm(server.clone(), "test-realm");
-        let mut discovery =
-            Discovery::resolved(endpoint, static_discovered_data(&server, "test-realm"));
+        let mut discovery = Discovery::resolved(fixture_endpoint(), static_discovered_data());
         discovery.op =
             Arc::new(|_endpoint, _request| Box::pin(async { panic!("requested discovery panic") }));
 
@@ -890,9 +896,11 @@ mod tests {
 
         // The resolved test discovery starts at generation 1; observing that generation forces a
         // new dispatch.
-        tokio::time::timeout(Duration::from_secs(2), discovery.refresh_if_needed(1))
-            .await
-            .expect("a panicking discovery must still terminate its waiters");
+        within_test_timeout(
+            "a panicking discovery must still terminate its waiters",
+            discovery.refresh_if_needed(1),
+        )
+        .await;
 
         assert_that!(discovery.is_operational()).is_true();
         assert_that!(discovery.snapshot()).matches(partial!(RefreshStateSnapshot {

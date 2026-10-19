@@ -368,10 +368,11 @@ mod tests {
         instance::KeycloakAuthInstance,
         layer::UnverifiedJwtHeaderLogging,
         test_support::{
-            CapturedLogs, EC_KEY_A, ManualClock, MockOidcServer, RSA_KEY_A, RSA_KEY_B,
-            StaticKeySource, assert_logged_iff, config_for, discovered_instance, keycloak_claims,
-            legacy_policy, refresh_policy_without_jitter, signed_token, strict_policy,
-            validation_time, wait_for_discovery_completion,
+            CapturedLogs, Claims, EC_KEY_A, ManualClock, MockOidcServer, RSA_KEY_A, RSA_KEY_B,
+            StaticKeySource, assert_logged_iff, claims_with, claims_without, config_for,
+            discovered_instance, keycloak_claims, legacy_policy, refresh_policy_without_jitter,
+            signed_token, strict_policy, validation_time, wait_for_discovery_completion,
+            within_test_timeout,
         },
         token::{ProfileAndEmail, RawClaims, RawToken},
     };
@@ -389,10 +390,6 @@ mod tests {
     };
 
     // ----- Shared helpers -------------------------------------------------------------------
-
-    fn manual_clock() -> Arc<ManualClock> {
-        Arc::new(ManualClock::new(validation_time()))
-    }
 
     fn validator<K: KeySource>(
         source: Arc<K>,
@@ -428,7 +425,7 @@ mod tests {
         token: &str,
     ) -> Result<RawClaims, AuthError> {
         let policy = legacy_policy().build().expect("the test policy must build");
-        decode(source, policy, manual_clock(), token).await
+        decode(source, policy, ManualClock::at_validation_time(), token).await
     }
 
     /// [`decode`] under the strict policy and the fixed test clock.
@@ -439,7 +436,7 @@ mod tests {
         let policy = strict_policy()
             .build()
             .expect("the strict policy must build");
-        decode(source, policy, manual_clock(), token).await
+        decode(source, policy, ManualClock::at_validation_time(), token).await
     }
 
     fn key_a(kid: &str) -> Jwk {
@@ -460,25 +457,10 @@ mod tests {
     }
 
     /// The fixture claims at the test time, signed RS256 by key A under "key-a".
-    fn signed_claims_token(claims: &serde_json::Map<String, serde_json::Value>) -> String {
+    fn signed_claims_token(claims: &Claims) -> String {
         RSA_KEY_A
             .sign(claims, Algorithm::RS256, Some("key-a"))
             .expect("test token must sign")
-    }
-
-    fn claims_with(
-        claim: &str,
-        value: serde_json::Value,
-    ) -> serde_json::Map<String, serde_json::Value> {
-        let mut claims = keycloak_claims(validation_time());
-        claims.insert(String::from(claim), value);
-        claims
-    }
-
-    fn claims_without(claim: &str) -> serde_json::Map<String, serde_json::Value> {
-        let mut claims = keycloak_claims(validation_time());
-        claims.remove(claim);
-        claims
     }
 
     /// A token whose signature part is a well-formed but wrong ES256 signature (64 zero bytes).
@@ -640,10 +622,12 @@ mod tests {
         assert_that!(provider.jwks_requests()).is_equal_to(2);
 
         gate.release();
-        let results = tokio::time::timeout(Duration::from_secs(2), validations)
-            .await
-            .expect("waiting validations must finish after the shared refresh")
-            .expect("validation task must not panic");
+        let results = within_test_timeout(
+            "waiting validations must finish after the shared refresh",
+            validations,
+        )
+        .await
+        .expect("validation task must not panic");
         assert_that!(results).matches(each(IsOk));
         assert_that!(provider.discovery_requests()).is_equal_to(2);
         assert_that!(provider.jwks_requests()).is_equal_to(2);
@@ -749,7 +733,7 @@ mod tests {
     #[tokio::test]
     async fn usable_refresh_recovers_after_an_empty_result() {
         let provider = provider_with_key_a().await;
-        let clock = manual_clock();
+        let clock = ManualClock::at_validation_time();
         let instance = discovered_instance_with_refresh_policy(
             &provider,
             clock.clone(),
@@ -784,7 +768,7 @@ mod tests {
     #[tokio::test]
     async fn refreshes_after_initial_jwks_without_usable_keys_reaches_its_retry_deadline() {
         let provider = MockOidcServer::start().await;
-        let clock = manual_clock();
+        let clock = ManualClock::at_validation_time();
         let instance = Arc::new(KeycloakAuthInstance::new_with_refresh_policy(
             &config_for(&provider),
             uuid::Uuid::from_u128(1),
@@ -808,7 +792,7 @@ mod tests {
     #[tokio::test]
     async fn empty_refresh_without_usable_cache_uses_failure_backoff() {
         let provider = MockOidcServer::start().await;
-        let clock = manual_clock();
+        let clock = ManualClock::at_validation_time();
         let instance = Arc::new(KeycloakAuthInstance::new_with_refresh_policy(
             &config_for(&provider),
             uuid::Uuid::from_u128(1),
@@ -1139,7 +1123,7 @@ mod tests {
         let token = signed_claims_token(&claims_with("aud", serde_json::json!(42)));
 
         assert_that!(
-            validator(source, policy, manual_clock())
+            validator(source, policy, ManualClock::at_validation_time())
                 .validate(&token)
                 .await
         )
@@ -1217,7 +1201,7 @@ mod tests {
         let strict_validator = validator(
             source.clone(),
             strict_policy().build().expect("strict policy must build"),
-            manual_clock(),
+            ManualClock::at_validation_time(),
         );
 
         let within_leeway = claims_with("exp", serde_json::json!(timestamp - 60));
@@ -1236,7 +1220,7 @@ mod tests {
         let legacy_validator = validator(
             source,
             legacy_policy().build().expect("legacy policy must build"),
-            manual_clock(),
+            ManualClock::at_validation_time(),
         );
         let legacy_expired = claims_with("exp", serde_json::json!(timestamp - 1));
         let result = legacy_validator
@@ -1289,7 +1273,7 @@ mod tests {
                 .validate_issued_at(false)
                 .build()
                 .expect("strict policy must build"),
-            manual_clock(),
+            ManualClock::at_validation_time(),
             &future_token,
         )
         .await
@@ -1305,7 +1289,7 @@ mod tests {
                 .validate_issued_at(true)
                 .build()
                 .expect("legacy policy with issued-at validation must build"),
-            manual_clock(),
+            ManualClock::at_validation_time(),
             &future_token,
         )
         .await;
@@ -1352,7 +1336,7 @@ mod tests {
             )
             .expect("test token must sign");
 
-        let result = decode(&source, policy, manual_clock(), &token).await;
+        let result = decode(&source, policy, ManualClock::at_validation_time(), &token).await;
 
         assert_invalid_algorithm(&result);
         assert_that!(source.refresh_requests()).is_equal_to(0);
@@ -1511,7 +1495,7 @@ mod tests {
             .allowed_authorized_parties(vec![String::from("test-client")])
             .build()
             .expect("policy must build");
-        decode(&source, allowing, manual_clock(), &token)
+        decode(&source, allowing, ManualClock::at_validation_time(), &token)
             .await
             .expect("the fixture azp must be accepted when listed");
 
@@ -1519,7 +1503,13 @@ mod tests {
             .allowed_authorized_parties(vec![String::from("other-client")])
             .build()
             .expect("policy must build");
-        let result = decode(&source, rejecting, manual_clock(), &token).await;
+        let result = decode(
+            &source,
+            rejecting,
+            ManualClock::at_validation_time(),
+            &token,
+        )
+        .await;
         assert_invalid_token(&result);
     }
 
@@ -1534,7 +1524,7 @@ mod tests {
         let result = decode(
             &source,
             policy.clone(),
-            manual_clock(),
+            ManualClock::at_validation_time(),
             &signed_token(&RSA_KEY_A, Some("key-a")),
         )
         .await;
@@ -1546,7 +1536,7 @@ mod tests {
         decode(
             &source,
             policy,
-            manual_clock(),
+            ManualClock::at_validation_time(),
             &signed_claims_token(&claims_with("sid", serde_json::json!("test-session"))),
         )
         .await
@@ -1562,7 +1552,7 @@ mod tests {
             .expiry_transit_margin(Duration::from_secs(30))
             .build()
             .expect("policy must build");
-        let validator = validator(source, policy, manual_clock());
+        let validator = validator(source, policy, ManualClock::at_validation_time());
         let timestamp = validation_time().unix_timestamp();
 
         validator
@@ -1592,15 +1582,26 @@ mod tests {
         ));
 
         let default_leeway = legacy_policy().build().expect("policy must build");
-        decode(&source, default_leeway, manual_clock(), &token)
-            .await
-            .expect("the default 60 second leeway must pass this decode stage");
+        decode(
+            &source,
+            default_leeway,
+            ManualClock::at_validation_time(),
+            &token,
+        )
+        .await
+        .expect("the default 60 second leeway must pass this decode stage");
 
         let no_leeway = legacy_policy()
             .leeway(Duration::ZERO)
             .build()
             .expect("policy must build");
-        let result = decode(&source, no_leeway, manual_clock(), &token).await;
+        let result = decode(
+            &source,
+            no_leeway,
+            ManualClock::at_validation_time(),
+            &token,
+        )
+        .await;
         assert_expired(&result);
     }
 
@@ -1634,7 +1635,7 @@ mod tests {
             .expiry_transit_margin(Duration::from_millis(900))
             .build()
             .expect("policy must build");
-        let margin_validator = validator(source.clone(), margin, manual_clock());
+        let margin_validator = validator(source.clone(), margin, ManualClock::at_validation_time());
         margin_validator
             .validate(&signed_claims_token(&claims_with(
                 "exp",
@@ -1659,7 +1660,7 @@ mod tests {
         decode(
             &source,
             leeway.clone(),
-            manual_clock(),
+            ManualClock::at_validation_time(),
             &signed_claims_token(&claims_with("exp", serde_json::json!(timestamp - 1))),
         )
         .await
@@ -1668,7 +1669,7 @@ mod tests {
             &decode(
                 &source,
                 leeway,
-                manual_clock(),
+                ManualClock::at_validation_time(),
                 &signed_claims_token(&claims_with("exp", serde_json::json!(timestamp - 2))),
             )
             .await,
@@ -1689,7 +1690,7 @@ mod tests {
                     .policy(legacy_policy().build().expect("the test policy must build"))
                     .required_roles(vec![String::from("developer"), String::from("reader")])
                     .persist_raw_claims(persist_raw_claims)
-                    .clock(manual_clock())
+                    .clock(ManualClock::at_validation_time())
                     .build();
 
             let validated = validator
@@ -1716,7 +1717,7 @@ mod tests {
             .policy(legacy_policy().build().expect("the test policy must build"))
             .required_roles(vec![String::from("missing-role")])
             .persist_raw_claims(false)
-            .clock(manual_clock())
+            .clock(ManualClock::at_validation_time())
             .build();
         assert_that!(rejecting.validate(&token).await).is_matching(pattern!(
             Err(AuthError::MissingExpectedRole { role }) if role == "missing-role"
@@ -1736,12 +1737,6 @@ mod tests {
             Some(tracing::Level::INFO),
         ] {
             let logs = CapturedLogs::default();
-            let subscriber = tracing_subscriber::fmt()
-                .without_time()
-                .with_ansi(false)
-                .with_max_level(tracing::Level::TRACE)
-                .with_writer(logs.clone())
-                .finish();
             let validator = Validator::<String, ProfileAndEmail, StaticKeySource>::builder()
                 .key_source(source.clone())
                 .policy(legacy_policy().build().expect("the test policy must build"))
@@ -1751,11 +1746,11 @@ mod tests {
                 .unverified_jwt_header_logging(Some(UnverifiedJwtHeaderLogging::Metadata(
                     tracing::Level::DEBUG,
                 )))
-                .clock(manual_clock())
+                .clock(ManualClock::at_validation_time())
                 .build();
 
             let validated = {
-                let _default = tracing::subscriber::set_default(subscriber);
+                let _capture = logs.capture();
                 validator.validate(&token).await
             };
             validated.expect("the fixture token must validate");
@@ -1817,23 +1812,17 @@ mod tests {
             Some(UnverifiedJwtHeaderLogging::Complete(tracing::Level::INFO)),
         ] {
             let logs = CapturedLogs::default();
-            let subscriber = tracing_subscriber::fmt()
-                .without_time()
-                .with_ansi(false)
-                .with_max_level(tracing::Level::TRACE)
-                .with_writer(logs.clone())
-                .finish();
             let validator = Validator::<String, ProfileAndEmail, StaticKeySource>::builder()
                 .key_source(source.clone())
                 .policy(legacy_policy().build().expect("the test policy must build"))
                 .required_roles(Vec::new())
                 .persist_raw_claims(false)
                 .unverified_jwt_header_logging(logging)
-                .clock(manual_clock())
+                .clock(ManualClock::at_validation_time())
                 .build();
 
             let result = {
-                let _default = tracing::subscriber::set_default(subscriber);
+                let _capture = logs.capture();
                 validator.validate(&token).await
             };
             assert_that!(result).is_matching(pattern!(Err(AuthError::Decode { source }) if

@@ -226,15 +226,8 @@ mod tests {
             tail: vec![Arc::new(QueryParamTokenExtractor::default())],
         };
         let logs = CapturedLogs::default();
-        let subscriber = tracing_subscriber::fmt()
-            .without_time()
-            .with_ansi(false)
-            .with_max_level(tracing::Level::TRACE)
-            .with_writer(logs.clone())
-            .finish();
-
         let extracted = {
-            let _default = tracing::subscriber::set_default(subscriber);
+            let _capture = logs.capture();
             extract_jwt(
                 &request,
                 &extractors,
@@ -263,15 +256,8 @@ mod tests {
             ],
         };
         let logs = CapturedLogs::default();
-        let subscriber = tracing_subscriber::fmt()
-            .without_time()
-            .with_ansi(false)
-            .with_max_level(tracing::Level::TRACE)
-            .with_writer(logs.clone())
-            .finish();
-
         let extracted = {
-            let _default = tracing::subscriber::set_default(subscriber);
+            let _capture = logs.capture();
             extract_jwt(
                 &request,
                 &extractors,

@@ -1,20 +1,17 @@
+//! Validation policy presets completed for the fixture realm.
+
 use crate::validation::{ValidationPolicy, ValidationPolicyBuilder};
 
-/// The audience carried by the fixture tokens from [`super::jwt::keycloak_claims`].
-fn audiences() -> [String; 1] {
-    [String::from("account")]
-}
+use super::{TEST_AUDIENCE, TEST_ISSUER};
 
-/// The legacy preset completed with the audiences of the test fixtures.
+/// The legacy preset, expecting [`TEST_AUDIENCE`].
 pub(crate) fn legacy_policy() -> ValidationPolicyBuilder {
-    ValidationPolicy::legacy().expected_audiences(audiences().to_vec())
+    ValidationPolicy::legacy().expected_audiences(vec![String::from(TEST_AUDIENCE)])
 }
 
-/// The strict preset completed with the audiences and issuer of the test fixtures.
+/// The strict preset, expecting [`TEST_AUDIENCE`] and [`TEST_ISSUER`].
 pub(crate) fn strict_policy() -> ValidationPolicyBuilder {
     ValidationPolicy::strict()
-        .expected_audiences(audiences().to_vec())
-        .expected_issuers(vec![String::from(
-            "https://issuer.example/realms/test-realm",
-        )])
+        .expected_audiences(vec![String::from(TEST_AUDIENCE)])
+        .expected_issuers(vec![String::from(TEST_ISSUER)])
 }

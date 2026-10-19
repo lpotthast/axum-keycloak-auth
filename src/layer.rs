@@ -331,7 +331,6 @@ mod test {
     use std::{
         panic::{AssertUnwindSafe, catch_unwind},
         sync::{Arc, mpsc},
-        time::Duration,
     };
 
     use assertr::{
@@ -351,20 +350,21 @@ mod test {
         },
         layer::{KeycloakAuthLayer, UnverifiedJwtHeaderLogging},
         test_support::{
-            ManualClock, MockOidcServer, RSA_KEY_A, RSA_KEY_B, discovered_instance,
-            keycloak_claims, offline_instance, signed_token, validation_time,
+            ManualClock, MockOidcServer, RSA_KEY_A, RSA_KEY_B, TEST_AUDIENCE, TEST_ISSUER,
+            TEST_KID, TEST_TIMEOUT, discovered_instance, keycloak_claims, offline_instance_at,
+            offline_layer, signed_token, validation_time,
         },
     };
 
     #[tokio::test]
     async fn build_basic_layer() {
         let provider = MockOidcServer::start().await;
-        let instance = offline_instance(provider.server_url(), provider.realm().to_owned());
+        let instance = offline_instance_at(provider.server_url(), provider.realm());
 
         let layer = KeycloakAuthLayer::<String>::builder()
             .instance(instance)
             .passthrough_mode(PassthroughMode::Block)
-            .expected_audiences(vec![String::from("account")])
+            .expected_audiences(vec![String::from(TEST_AUDIENCE)])
             .build();
 
         assert_that!(layer).matches(partial!(KeycloakAuthLayer {
@@ -382,7 +382,7 @@ mod test {
     #[tokio::test]
     async fn build_full_layer() {
         let provider = MockOidcServer::start().await;
-        let instance = offline_instance(provider.server_url(), provider.realm().to_owned());
+        let instance = offline_instance_at(provider.server_url(), provider.realm());
 
         let layer = KeycloakAuthLayer::<String>::builder()
             .instance(instance)
@@ -394,7 +394,7 @@ mod test {
             ))
             .dangerously_log_authentication_errors(tracing::Level::INFO)
             .dangerously_log_token_extraction_errors(tracing::Level::DEBUG)
-            .expected_audiences(vec![String::from("account")])
+            .expected_audiences(vec![String::from(TEST_AUDIENCE)])
             .required_roles(vec![String::from("administrator")])
             .token_extraction_error_policy(TokenExtractionErrorPolicy::Reject)
             .token_extractors(NonEmpty::<Arc<dyn TokenExtractor>> {
@@ -425,17 +425,17 @@ mod test {
     async fn validates_signed_tokens_with_mock_discovery_and_manual_time() {
         let provider = MockOidcServer::start().await;
         provider
-            .set_jwks(vec![RSA_KEY_A.jwk(Some("key-a"), Algorithm::RS256)])
+            .set_jwks(vec![RSA_KEY_A.jwk(Some(TEST_KID), Algorithm::RS256)])
             .await;
         let instance = discovered_instance(&provider).await;
 
-        let clock = ManualClock::new(validation_time());
+        let clock = ManualClock::at_validation_time();
         let layer = KeycloakAuthLayer::<String, Value>::builder()
             .instance(instance)
             .persist_raw_claims(true)
-            .expected_audiences(vec![String::from("account")])
+            .expected_audiences(vec![String::from(TEST_AUDIENCE)])
             .build()
-            .with_clock(Arc::new(clock.clone()));
+            .with_clock(clock.clone());
 
         let mut claims = keycloak_claims(validation_time());
         claims.insert(
@@ -443,7 +443,7 @@ mod test {
             json!(validation_time().unix_timestamp()),
         );
         let token = RSA_KEY_A
-            .sign(&claims, Algorithm::RS256, Some("key-a"))
+            .sign(&claims, Algorithm::RS256, Some(TEST_KID))
             .expect("test token must sign");
 
         let (raw_claims, token_data) = layer
@@ -469,20 +469,12 @@ mod test {
     #[tokio::test]
     async fn expired_malformed_claims_preserve_decode_error_ordering() {
         let now = validation_time();
-        let instance = offline_instance(
-            url::Url::parse("https://issuer.example/").expect("test URL must parse"),
-            String::from("test-realm"),
-        );
-        let layer = KeycloakAuthLayer::<String, Value>::builder()
-            .instance(instance)
-            .expected_audiences(vec![String::from("account")])
-            .build()
-            .with_clock(Arc::new(ManualClock::new(now)));
+        let layer = offline_layer();
         let mut claims = keycloak_claims(now);
         claims.insert(String::from("exp"), json!(now.unix_timestamp() - 61));
         claims.insert(String::from("iat"), json!({ "malformed": true }));
         let token = RSA_KEY_A
-            .sign(&claims, Algorithm::RS256, Some("key-a"))
+            .sign(&claims, Algorithm::RS256, Some(TEST_KID))
             .expect("test token must sign");
 
         let error = layer
@@ -497,20 +489,12 @@ mod test {
     #[tokio::test]
     async fn expiration_precedes_audience_validation_as_before() {
         let now = validation_time();
-        let instance = offline_instance(
-            url::Url::parse("https://issuer.example/").expect("test URL must parse"),
-            String::from("test-realm"),
-        );
-        let layer = KeycloakAuthLayer::<String, Value>::builder()
-            .instance(instance)
-            .expected_audiences(vec![String::from("account")])
-            .build()
-            .with_clock(Arc::new(ManualClock::new(now)));
+        let layer = offline_layer();
         let mut claims = keycloak_claims(now);
         claims.insert(String::from("exp"), json!(now.unix_timestamp() - 61));
         claims.insert(String::from("aud"), json!(["different-audience"]));
         let token = RSA_KEY_A
-            .sign(&claims, Algorithm::RS256, Some("key-a"))
+            .sign(&claims, Algorithm::RS256, Some(TEST_KID))
             .expect("test token must sign");
 
         assert_that!(layer.validate_raw_token(&token).await).is_matching(pattern!(
@@ -523,18 +507,18 @@ mod test {
     async fn refreshed_decode_uses_a_fresh_consistent_validation_time() {
         let provider = MockOidcServer::start().await;
         provider
-            .set_jwks(vec![RSA_KEY_A.jwk(Some("key-a"), Algorithm::RS256)])
+            .set_jwks(vec![RSA_KEY_A.jwk(Some(TEST_KID), Algorithm::RS256)])
             .await;
         let instance = discovered_instance(&provider).await;
         let gate = provider
             .set_gated_jwks(vec![RSA_KEY_B.jwk(Some("key-b"), Algorithm::RS256)])
             .await;
-        let clock = ManualClock::new(validation_time());
+        let clock = ManualClock::at_validation_time();
         let layer = KeycloakAuthLayer::<String, Value>::builder()
             .instance(instance)
-            .expected_audiences(vec![String::from("account")])
+            .expected_audiences(vec![String::from(TEST_AUDIENCE)])
             .build()
-            .with_clock(Arc::new(clock.clone()));
+            .with_clock(clock.clone());
         let mut claims = keycloak_claims(validation_time());
         claims.insert(
             String::from("exp"),
@@ -544,13 +528,7 @@ mod test {
             .sign(&claims, Algorithm::RS256, Some("key-b"))
             .expect("key B must sign");
         let validation = tokio::spawn(async move { layer.validate_raw_token(&token).await });
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while provider.jwks_requests() < 2 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("refresh must reach the gated JWKS response");
+        provider.wait_for_jwks_requests(2).await;
 
         clock.advance(time::Duration::seconds(2));
         gate.release();
@@ -568,14 +546,14 @@ mod test {
         let (layer, token) = runtime.block_on(async {
             let provider = MockOidcServer::start().await;
             provider
-                .set_jwks(vec![RSA_KEY_A.jwk(Some("key-a"), Algorithm::RS256)])
+                .set_jwks(vec![RSA_KEY_A.jwk(Some(TEST_KID), Algorithm::RS256)])
                 .await;
             let instance = discovered_instance(&provider).await;
             let layer = KeycloakAuthLayer::<String, Value>::builder()
                 .instance(instance)
-                .expected_audiences(vec![String::from("account")])
+                .expected_audiences(vec![String::from(TEST_AUDIENCE)])
                 .build()
-                .with_clock(Arc::new(ManualClock::new(validation_time())));
+                .with_clock(ManualClock::at_validation_time());
             let token = signed_token(&RSA_KEY_B, Some("key-b"));
             (layer, token)
         });
@@ -596,7 +574,7 @@ mod test {
         });
 
         let (panic_payload, consecutive_failures) = result_rx
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(TEST_TIMEOUT)
             .expect("validation and its cancellation bookkeeping must not deadlock");
         let panic_payload =
             panic_payload.expect("validation must panic without an active Tokio runtime");
@@ -608,24 +586,22 @@ mod test {
     async fn strict_policy_inherits_the_layer_expected_audiences() {
         let provider = MockOidcServer::start().await;
         provider
-            .set_jwks(vec![RSA_KEY_A.jwk(Some("key-a"), Algorithm::RS256)])
+            .set_jwks(vec![RSA_KEY_A.jwk(Some(TEST_KID), Algorithm::RS256)])
             .await;
         let instance = discovered_instance(&provider).await;
         let layer = KeycloakAuthLayer::<String, Value>::builder()
             .instance(instance)
-            .expected_audiences(vec![String::from("account")])
+            .expected_audiences(vec![String::from(TEST_AUDIENCE)])
             .validation_policy(
                 crate::validation::ValidationPolicy::strict()
-                    .expected_issuers(vec![String::from(
-                        "https://issuer.example/realms/test-realm",
-                    )])
+                    .expected_issuers(vec![String::from(TEST_ISSUER)])
                     .build()
                     .expect("a strict policy naming its issuers must build"),
             )
             .build()
-            .with_clock(Arc::new(ManualClock::new(validation_time())));
+            .with_clock(ManualClock::at_validation_time());
 
-        let token = signed_token(&RSA_KEY_A, Some("key-a"));
+        let token = signed_token(&RSA_KEY_A, Some(TEST_KID));
         layer
             .validate_raw_token(&token)
             .await
@@ -634,7 +610,7 @@ mod test {
         let mut claims = keycloak_claims(validation_time());
         claims.insert(String::from("aud"), json!(["other-service"]));
         let mismatched = RSA_KEY_A
-            .sign(&claims, Algorithm::RS256, Some("key-a"))
+            .sign(&claims, Algorithm::RS256, Some(TEST_KID))
             .expect("test token must sign");
         assert_that!(layer.validate_raw_token(&mismatched).await).is_matching(pattern!(
             Err(AuthError::Decode { source })
@@ -645,20 +621,12 @@ mod test {
     #[tokio::test]
     async fn within_leeway_malformed_claims_still_report_typed_parse_errors() {
         let now = validation_time();
-        let instance = offline_instance(
-            url::Url::parse("https://issuer.example/").expect("test URL must parse"),
-            String::from("test-realm"),
-        );
-        let layer = KeycloakAuthLayer::<String, Value>::builder()
-            .instance(instance)
-            .expected_audiences(vec![String::from("account")])
-            .build()
-            .with_clock(Arc::new(ManualClock::new(now)));
+        let layer = offline_layer();
         let mut claims = keycloak_claims(now);
         claims.insert(String::from("exp"), json!(now.unix_timestamp() - 60));
         claims.insert(String::from("iat"), json!({ "malformed": true }));
         let token = RSA_KEY_A
-            .sign(&claims, Algorithm::RS256, Some("key-a"))
+            .sign(&claims, Algorithm::RS256, Some(TEST_KID))
             .expect("test token must sign");
 
         assert_that!(layer.validate_raw_token(&token).await)

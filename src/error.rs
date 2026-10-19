@@ -290,10 +290,11 @@ mod tests {
 
     use assertr::prelude::*;
     use axum::{
-        body::to_bytes,
         http::{StatusCode, header::WWW_AUTHENTICATE},
         response::IntoResponse,
     };
+
+    use crate::test_support::response_text;
 
     use super::AuthError;
 
@@ -348,11 +349,7 @@ mod tests {
         .into_response();
 
         assert_that!(response.status()).is_equal_to(StatusCode::FORBIDDEN);
-        let body = to_bytes(response.into_body(), 1024)
-            .await
-            .expect("the JSON response body must be readable");
-        let body = std::str::from_utf8(&body).expect("the JSON response body must be UTF-8");
-        assert_that!(body)
+        assert_that!(response_text(response).await)
             .is_equal_to(r#"{"error":"Missing expected role"}"#)
             .does_not_contain("sensitive-administrator-role");
     }
@@ -365,11 +362,7 @@ mod tests {
             .some()
             .ascii()
             .is_equal_to("Bearer error=\"invalid_token\"");
-        let body = to_bytes(response.into_body(), 1024)
-            .await
-            .expect("the JSON response body must be readable");
-        let body = std::str::from_utf8(&body).expect("the JSON response body must be UTF-8");
-        assert_that!(body)
+        assert_that!(response_text(response).await)
             .is_equal_to(r#"{"error":"invalid_token"}"#)
             .does_not_contain("expected i64");
     }
