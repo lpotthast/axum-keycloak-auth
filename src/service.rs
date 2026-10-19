@@ -190,12 +190,13 @@ mod tests {
     use tower::Service;
 
     use crate::{
-        PassthroughMode,
+        KeycloakAuthStatus, PassthroughMode,
         layer::KeycloakAuthLayer,
         test_support::{
             CapturedLogs, ManualClock, RSA_KEY_A, assert_logged_iff, keycloak_claims,
             offline_instance, validation_time,
         },
+        token::{KeycloakToken, RawClaims},
     };
 
     use super::KeycloakAuthService;
@@ -298,6 +299,59 @@ mod tests {
             assert_that!(contents)
                 .with_subject_name("unrelated claims are never logged")
                 .does_not_contain("test@example.com");
+        }
+    }
+
+    #[tokio::test]
+    async fn successful_authentication_inserts_the_mode_specific_extensions() {
+        for passthrough_mode in [PassthroughMode::Block, PassthroughMode::Pass] {
+            let now = validation_time();
+            let layer = KeycloakAuthLayer::<String, Value>::builder()
+                .instance(offline_instance(
+                    url::Url::parse("https://issuer.example/")
+                        .expect("the test issuer URL must parse"),
+                    String::from("test-realm"),
+                ))
+                .passthrough_mode(passthrough_mode)
+                .expected_audiences(vec![String::from("account")])
+                .persist_raw_claims(true)
+                .build()
+                .with_clock(Arc::new(ManualClock::new(now)));
+            let inner = tower::service_fn(move |request: Request<Body>| async move {
+                let extensions = request.extensions();
+                let token_present = match passthrough_mode {
+                    PassthroughMode::Block => {
+                        extensions.get::<KeycloakToken<String, Value>>().is_some()
+                    }
+                    PassthroughMode::Pass => matches!(
+                        extensions.get::<KeycloakAuthStatus<String, Value>>(),
+                        Some(KeycloakAuthStatus::Success(_))
+                    ),
+                };
+                let status = if token_present && extensions.get::<RawClaims>().is_some() {
+                    StatusCode::NO_CONTENT
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                };
+                Ok::<_, Infallible>(status.into_response())
+            });
+            let mut service = KeycloakAuthService::new(inner, &layer);
+            let token = RSA_KEY_A
+                .sign(&keycloak_claims(now), Algorithm::RS256, Some("key-a"))
+                .expect("the valid test token must sign");
+            let request = Request::builder()
+                .header(AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .expect("the test request must build");
+
+            let response = service
+                .call(request)
+                .await
+                .expect("authentication middleware must not fail as a service");
+
+            assert_that!(response.status())
+                .with_subject_name(format!("response in {passthrough_mode:?} mode"))
+                .is_equal_to(StatusCode::NO_CONTENT);
         }
     }
 
