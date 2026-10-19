@@ -11,7 +11,7 @@
 mod pipeline;
 mod policy;
 
-use crate::{discovery::DecodingKeys, error::AuthError};
+use crate::discovery::DecodingKeys;
 
 pub(crate) use pipeline::Validator;
 pub use policy::{ValidationPolicy, ValidationPolicyBuilder};
@@ -30,10 +30,4 @@ pub(crate) trait KeySource {
     /// Implementations are expected to rate-limit and to share concurrent refreshes.
     /// Returns whether a generation newer than the observed one was published.
     async fn refresh_if_needed(&self, observed_generation: usize) -> bool;
-}
-
-fn decode_error(kind: jsonwebtoken::errors::ErrorKind) -> AuthError {
-    AuthError::Decode {
-        source: kind.into(),
-    }
 }

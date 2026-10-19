@@ -9,8 +9,6 @@ use crate::{
     token::RawClaims,
 };
 
-use super::decode_error;
-
 /// Requirements applied to every presented token.
 ///
 /// Create a policy from one of the presets, adjust it with [`ValidationPolicyBuilder`], and attach
@@ -529,6 +527,12 @@ fn check_expiration(
         ));
     }
     Ok(())
+}
+
+fn decode_error(kind: jsonwebtoken::errors::ErrorKind) -> AuthError {
+    AuthError::Decode {
+        source: kind.into(),
+    }
 }
 
 /// Rounds a duration up to whole seconds so a nonzero sub-second setting remains effective.
