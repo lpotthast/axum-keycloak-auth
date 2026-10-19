@@ -1323,7 +1323,7 @@ mod tests {
     async fn strict_policy_rejects_a_disallowed_algorithm_without_a_refresh() {
         let source = trusting_key_a();
         let policy = strict_policy()
-            .allowed_algorithms(vec![Algorithm::RS256])
+            .allowed_algorithms([Algorithm::RS256])
             .build()
             .expect("strict policy must build");
         // The unknown kid must not matter: the algorithm is rejected before any key material is
@@ -1492,7 +1492,7 @@ mod tests {
         let token = signed_token(&RSA_KEY_A, Some("key-a"));
 
         let allowing = strict_policy()
-            .allowed_authorized_parties(vec![String::from("test-client")])
+            .allowed_authorized_parties(["test-client"])
             .build()
             .expect("policy must build");
         decode(&source, allowing, ManualClock::at_validation_time(), &token)
@@ -1500,7 +1500,7 @@ mod tests {
             .expect("the fixture azp must be accepted when listed");
 
         let rejecting = strict_policy()
-            .allowed_authorized_parties(vec![String::from("other-client")])
+            .allowed_authorized_parties(["other-client"])
             .build()
             .expect("policy must build");
         let result = decode(
@@ -1517,7 +1517,7 @@ mod tests {
     async fn required_claims_are_enforced_by_name() {
         let source = trusting_key_a();
         let policy = legacy_policy()
-            .required_claims(vec![String::from("sid")])
+            .required_claims(["sid"])
             .build()
             .expect("policy must build");
 

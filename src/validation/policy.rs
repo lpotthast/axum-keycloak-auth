@@ -325,7 +325,19 @@ impl Default for ValidationPolicy {
 
 /// Builds a [`ValidationPolicy`] and checks its requirements for consistency.
 ///
-/// Create one through [`ValidationPolicy::legacy`] or [`ValidationPolicy::strict`].
+/// Create one through [`ValidationPolicy::legacy`] or [`ValidationPolicy::strict`]. List settings
+/// accept any iterable, such as an array of string slices:
+///
+/// ```
+/// use axum_keycloak_auth::validation::{Algorithm, ValidationPolicy};
+///
+/// let policy = ValidationPolicy::strict()
+///     .expected_issuers(["https://keycloak.example/realms/my-realm"])
+///     .expected_audiences(["my-api"])
+///     .allowed_algorithms([Algorithm::RS256])
+///     .build()?;
+/// # Ok::<(), axum_keycloak_auth::error::ValidationPolicyError>(())
+/// ```
 #[must_use]
 #[derive(Debug, Clone)]
 pub struct ValidationPolicyBuilder {
@@ -336,8 +348,12 @@ pub struct ValidationPolicyBuilder {
 impl ValidationPolicyBuilder {
     /// Audiences accepted by exact string match. If unset, the policy inherits the layer's
     /// `expected_audiences`.
-    pub fn expected_audiences(mut self, expected_audiences: Vec<String>) -> Self {
-        self.policy.expected_audiences = Some(expected_audiences);
+    pub fn expected_audiences<I>(mut self, expected_audiences: I) -> Self
+    where
+        I: IntoIterator,
+        I::Item: Into<String>,
+    {
+        self.policy.expected_audiences = Some(strings(expected_audiences));
         self
     }
 
@@ -353,15 +369,22 @@ impl ValidationPolicyBuilder {
     /// Keycloak realm this is commonly `https://host/realms/<realm>`. An empty list disables the
     /// allowlist, except under [`ValidationPolicy::strict`], where at least one issuer must be
     /// named. The built-in token model always requires `iss` to be a string.
-    pub fn expected_issuers(mut self, expected_issuers: Vec<String>) -> Self {
-        self.policy.expected_issuers = expected_issuers;
+    pub fn expected_issuers<I>(mut self, expected_issuers: I) -> Self
+    where
+        I: IntoIterator,
+        I::Item: Into<String>,
+    {
+        self.policy.expected_issuers = strings(expected_issuers);
         self
     }
 
     /// Restricts the accepted token signature algorithms. A token whose header names an
     /// algorithm outside this list is rejected before any key material is consulted.
-    pub fn allowed_algorithms(mut self, allowed_algorithms: Vec<Algorithm>) -> Self {
-        self.policy.allowed_algorithms = Some(allowed_algorithms);
+    pub fn allowed_algorithms(
+        mut self,
+        allowed_algorithms: impl IntoIterator<Item = Algorithm>,
+    ) -> Self {
+        self.policy.allowed_algorithms = Some(allowed_algorithms.into_iter().collect());
         self
     }
 
@@ -378,15 +401,23 @@ impl ValidationPolicyBuilder {
     ///
     /// This checks keys, not value types, so a `null` value counts as present. `exp` is always
     /// required independently of this list.
-    pub fn required_claims(mut self, required_claims: Vec<String>) -> Self {
-        self.policy.required_claims = required_claims;
+    pub fn required_claims<I>(mut self, required_claims: I) -> Self
+    where
+        I: IntoIterator,
+        I::Item: Into<String>,
+    {
+        self.policy.required_claims = strings(required_claims);
         self
     }
 
     /// Values accepted by exact, case-sensitive match for the payload `typ` claim. This is not the
     /// JWT header parameter of the same name. A missing, non-string, or unlisted value is rejected.
-    pub fn accepted_token_types(mut self, accepted_token_types: Vec<String>) -> Self {
-        self.policy.accepted_token_types = Some(accepted_token_types);
+    pub fn accepted_token_types<I>(mut self, accepted_token_types: I) -> Self
+    where
+        I: IntoIterator,
+        I::Item: Into<String>,
+    {
+        self.policy.accepted_token_types = Some(strings(accepted_token_types));
         self
     }
 
@@ -444,8 +475,12 @@ impl ValidationPolicyBuilder {
     /// Client IDs accepted by exact, case-sensitive match for the token's `azp` (authorized party)
     /// claim. A missing, non-string, or unlisted `azp` is rejected. The allowlist is unset by
     /// default, but the built-in token model always requires `azp` to be a string.
-    pub fn allowed_authorized_parties(mut self, allowed_authorized_parties: Vec<String>) -> Self {
-        self.policy.allowed_authorized_parties = Some(allowed_authorized_parties);
+    pub fn allowed_authorized_parties<I>(mut self, allowed_authorized_parties: I) -> Self
+    where
+        I: IntoIterator,
+        I::Item: Into<String>,
+    {
+        self.policy.allowed_authorized_parties = Some(strings(allowed_authorized_parties));
         self
     }
 
@@ -496,6 +531,15 @@ impl ValidationPolicyBuilder {
         }
         Ok(self.policy)
     }
+}
+
+/// Collects a list setting into owned strings.
+fn strings<I>(values: I) -> Vec<String>
+where
+    I: IntoIterator,
+    I::Item: Into<String>,
+{
+    values.into_iter().map(Into::into).collect()
 }
 
 /// Checks an integer `exp` against the configured leeway and minimum remaining lifetime. A missing
@@ -610,13 +654,13 @@ mod tests {
         assert_that!(inheriting.audiences_conflicting_with(&layer_audiences)).is_none();
 
         let agreeing = ValidationPolicy::legacy()
-            .expected_audiences(vec![String::from("api"), String::from("account")])
+            .expected_audiences(["api", "account"])
             .build()
             .expect("a legacy policy with audiences must build");
         assert_that!(agreeing.audiences_conflicting_with(&layer_audiences)).is_none();
 
         let overriding = ValidationPolicy::legacy()
-            .expected_audiences(vec![String::from("other-service")])
+            .expected_audiences(["other-service"])
             .build()
             .expect("a legacy policy with audiences must build");
         assert_that!(overriding.audiences_conflicting_with(&layer_audiences))
@@ -651,7 +695,7 @@ mod tests {
         assert_that!(strict.check_algorithm(Algorithm::RS256)).is_ok();
 
         let explicit = ValidationPolicy::legacy()
-            .allowed_algorithms(vec![Algorithm::RS256])
+            .allowed_algorithms([Algorithm::RS256])
             .build()
             .expect("an explicit-allowlist policy must build");
         rejects_invalid_algorithm(explicit.check_algorithm(Algorithm::ES256));
@@ -672,9 +716,13 @@ mod tests {
         assert_that!(ValidationPolicy::strict().build())
             .err()
             .is_equal_to(ValidationPolicyError::MissingExpectedIssuers);
-        assert_that!(strict_policy().expected_audiences(Vec::new()).build())
-            .err()
-            .is_equal_to(ValidationPolicyError::MissingExpectedAudiences);
+        assert_that!(
+            strict_policy()
+                .expected_audiences(Vec::<String>::new())
+                .build()
+        )
+        .err()
+        .is_equal_to(ValidationPolicyError::MissingExpectedAudiences);
         assert_that!(
             ValidationPolicy::legacy()
                 .allowed_algorithms(Vec::new())
@@ -684,14 +732,14 @@ mod tests {
         .is_equal_to(ValidationPolicyError::MissingAllowedAlgorithms);
         assert_that!(
             ValidationPolicy::legacy()
-                .accepted_token_types(Vec::new())
+                .accepted_token_types(Vec::<String>::new())
                 .build()
         )
         .err()
         .is_equal_to(ValidationPolicyError::MissingAcceptedTokenTypes);
         assert_that!(
             ValidationPolicy::legacy()
-                .allowed_authorized_parties(Vec::new())
+                .allowed_authorized_parties(Vec::<String>::new())
                 .build()
         )
         .err()

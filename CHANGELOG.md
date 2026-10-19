@@ -59,6 +59,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   while the opt-in `ValidationPolicy::strict()` enforces named issuers, matching audiences, asymmetric algorithms,
   access-token types, and consistent `exp`, `nbf`, and `iat` checks. Policies support required claims, clock skew,
   expiry transit margins, and `azp` constraints, and return typed `ValidationPolicyError`s for invalid configurations.
+  List settings accept any iterable, such as `.expected_audiences(["my-api"])`.
 - Added `KeycloakAuthInstance::connect` and `connect_with_client` to await initial OIDC discovery and fail fast with
   `ConnectError`. `connect_with_client` accepts a caller-supplied `reqwest::Client` for custom timeouts, proxies, trust
   roots, and mTLS.

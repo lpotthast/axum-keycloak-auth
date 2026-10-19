@@ -594,7 +594,7 @@ mod test {
             .expected_audiences(vec![String::from(TEST_AUDIENCE)])
             .validation_policy(
                 crate::validation::ValidationPolicy::strict()
-                    .expected_issuers(vec![String::from(TEST_ISSUER)])
+                    .expected_issuers([TEST_ISSUER])
                     .build()
                     .expect("a strict policy naming its issuers must build"),
             )
