@@ -7,6 +7,8 @@ install-tools:
     cargo +stable install cargo-minimal-versions --locked
     cargo install cargo-semver-checks --locked
     cargo +stable install cargo-msrv --locked
+    cargo +stable install cargo-audit --locked
+    cargo +stable install cargo-sort --locked
 
 # Check if the current dependency version bounds are sufficient.
 minimal-versions:
@@ -32,7 +34,7 @@ clippy:
 # Run all tests, including integration tests (requires Podman to launch Keycloak containers).
 # We pass the `--nocapture` flag to be able to see tracing output.
 test:
-    cargo test  --all --all-features -- --nocapture
+    cargo test --all --all-features -- --nocapture
 
 # Build the crate documentation.
 build-docs:
