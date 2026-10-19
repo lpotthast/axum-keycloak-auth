@@ -223,10 +223,10 @@ impl KeycloakAuthInstance {
     }
 
     /// Returns a point-in-time view of discovery and refresh state for health reporting.
-    // Async for consistency with `is_operational`, and so that the status can later be gathered
-    // asynchronously without a breaking change.
-    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
-    pub async fn operational_status(&self) -> OperationalStatus {
+    ///
+    /// This only reads in-memory state and never waits for a running discovery.
+    #[must_use]
+    pub fn operational_status(&self) -> OperationalStatus {
         self.discovery.operational_status()
     }
 
@@ -317,7 +317,7 @@ mod tests {
             .expect("connect must succeed against a healthy provider");
 
         assert_that!(instance.is_operational().await).is_true();
-        assert_that!(instance.operational_status().await).matches(partial!(OperationalStatus {
+        assert_that!(instance.operational_status()).matches(partial!(OperationalStatus {
             is_operational: IsTrue,
             time_since_last_success: IsSome,
             time_since_last_attempt: IsSome,
@@ -428,7 +428,7 @@ mod tests {
         .await;
 
         assert_that!(instance.is_operational().await).is_false();
-        assert_that!(instance.operational_status().await).matches(partial!(OperationalStatus {
+        assert_that!(instance.operational_status()).matches(partial!(OperationalStatus {
             is_operational: IsFalse,
             time_since_last_success: IsNone,
             last_error: IsSome,
@@ -445,7 +445,7 @@ mod tests {
         instance.ready().await;
 
         assert_that!(instance.is_operational().await).is_false();
-        assert_that!(instance.operational_status().await).matches(partial!(OperationalStatus {
+        assert_that!(instance.operational_status()).matches(partial!(OperationalStatus {
             is_operational: IsFalse,
             time_since_last_success: IsNone,
             last_error: partial!(variant Some(eq("The provider returned no usable decoding keys"))),

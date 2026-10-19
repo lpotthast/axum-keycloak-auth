@@ -565,9 +565,7 @@ mod test {
                 futures::executor::block_on(layer.validate_raw_token(&token))
             }))
             .err();
-            let consecutive_failures =
-                futures::executor::block_on(layer.instance.operational_status())
-                    .consecutive_failures;
+            let consecutive_failures = layer.instance.operational_status().consecutive_failures;
             result_tx
                 .send((panic_payload, consecutive_failures))
                 .expect("the test must still be waiting for validation");
