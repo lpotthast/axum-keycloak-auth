@@ -32,7 +32,12 @@ pub struct KeycloakConfig {
     /// Retry count and fixed delay in seconds for OIDC discovery and JWKS requests.
     ///
     /// The first value is the number of retries after the initial attempt. The default `(5, 1)`
-    /// permits up to six attempts per endpoint with a one-second delay.
+    /// permits up to six attempts per endpoint with a one-second delay. Every failed request is
+    /// retried, including non-success HTTP responses.
+    ///
+    /// Retries apply to the initial discovery and to every on-demand refresh. Requests wait at most
+    /// five seconds for a shared refresh and then continue with the cached keys while the refresh
+    /// keeps retrying in the background. Lower these values if a refresh should give up sooner.
     #[builder(default = (5, 1))]
     pub retry: (usize, u64),
 }
@@ -78,9 +83,13 @@ impl KeycloakAuthInstance {
 
     /// Creates an instance and waits for initial OIDC discovery.
     ///
-    /// Provider requests use one shared HTTP client with bounded connect and total-request
-    /// deadlines. Use [`Self::connect_with_client`] to customize deadlines, proxies, trust roots,
-    /// or mTLS through your own [`reqwest::Client`].
+    /// Provider requests use one shared HTTP client with a 10-second connect timeout and a
+    /// 30-second total-request timeout. Use [`Self::connect_with_client`] to customize deadlines,
+    /// proxies, trust roots, or mTLS through your own [`reqwest::Client`].
+    ///
+    /// Each endpoint is attempted up to `retry.0 + 1` times (see [`KeycloakConfig::retry`]), so an
+    /// unreachable provider can delay this call for several minutes with the defaults. Wrap it in
+    /// `tokio::time::timeout` when startup needs a hard deadline.
     ///
     /// # Errors
     ///
@@ -167,7 +176,8 @@ impl KeycloakAuthInstance {
     /// Waits until initial OIDC discovery terminates, successfully or not.
     ///
     /// Call [`Self::is_operational`] or [`Self::operational_status`] afterward to inspect the
-    /// outcome. This method adds no timeout beyond those configured on the HTTP client.
+    /// outcome. This method adds no deadline of its own. The wait is bounded only by the HTTP
+    /// client's timeouts multiplied by the attempts configured through [`KeycloakConfig::retry`].
     pub async fn ready(&self) {
         self.discovery.wait_for_completion(1).await;
     }
@@ -183,7 +193,8 @@ impl KeycloakAuthInstance {
     }
 
     /// Returns a point-in-time view of discovery and refresh state for health reporting.
-    // Keep the public async API stable even though refresh bookkeeping now uses a plain mutex.
+    // Async for consistency with `is_operational`, and so that the status can later be gathered
+    // asynchronously without a breaking change.
     #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     pub async fn operational_status(&self) -> OperationalStatus {
         self.discovery.operational_status()

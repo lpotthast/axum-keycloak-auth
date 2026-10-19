@@ -11,7 +11,7 @@ use snafu::{ResultExt, Snafu};
 #[derive(Debug, Clone, Snafu)]
 pub enum RequestError {
     /// The request could not produce a successful HTTP response.
-    #[snafu(display("RequestError: Could not send request"))]
+    #[snafu(display("RequestError: Request failed or returned a non-success status"))]
     Send {
         /// The transport, timeout, redirect, or HTTP status error.
         source: Arc<reqwest::Error>,

@@ -101,9 +101,9 @@ where
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         // Readiness deliberately does not wait for OIDC discovery: requests that need decoding
-        // keys block inside `call` until the initial discovery terminated (see
-        // `Discovery::refresh_if_needed`), and requests that are rejected without keys (for
-        // example on a missing token) do not need discovery at all.
+        // keys wait inside `call`, for at most the refresh policy's `max_refresh_wait`, for the
+        // initial or a shared on-demand discovery (see `Discovery::refresh_if_needed`). Requests
+        // that are rejected without keys (for example on a missing token) do not need discovery.
         self.inner.poll_ready(cx)
     }
 

@@ -80,7 +80,8 @@ struct RefreshState {
     last_error: Option<(Instant, RefreshError)>,
     consecutive_failures: u32,
     /// The earliest instant at which a new on-demand refresh may start. Only consulted while no
-    /// discovery is pending. Set by every terminated discovery.
+    /// discovery is pending. Set by every terminated discovery, except that a successful initial
+    /// discovery clears it so the first token with an unknown `kid` may refresh immediately.
     next_refresh_at: Option<Instant>,
     /// Whether a discovery is currently in flight. Guarded by the surrounding lock, this is what
     /// makes refreshes single-flight.
