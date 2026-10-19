@@ -7,16 +7,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.8.4] - 2026-08-30
+## [0.8.4] - 2026-10-19
 
 ### Security
 
-- Bearer tokens that fail decoding or validation now consistently return `401 Unauthorized`. Detailed errors remain
-  available through `AuthError` and the optional `dangerously_log_authentication_errors(level)` setting, but are no
-  longer exposed to clients or logged by default. The separate `dangerously_log_token_extraction_errors(level)` setting
-  logs every token extractor error and the extractor's `Debug` output when explicitly enabled. Typed claim parsing
-  failures previously returned `500 Internal Server Error`, exposing internal details, while fallback extraction errors
-  previously bypassed the logging opt-in.
+- Bearer tokens that fail decoding or validation now consistently return `401 Unauthorized` with the generic body
+  `{"error":"invalid_token"}` and a `WWW-Authenticate: Bearer error="invalid_token"` challenge. Undecodable token
+  headers previously returned `400 Bad Request`. Detailed errors remain available through `AuthError` and the optional
+  `dangerously_log_authentication_errors(level)` setting, but are no longer exposed to clients or logged by default.
+  The separate `dangerously_log_token_extraction_errors(level)` setting logs every token extractor error and the
+  extractor's `Debug` output when explicitly enabled. Typed claim parsing failures previously returned `500 Internal
+  Server Error`, exposing internal details, while fallback extraction errors previously bypassed the logging opt-in.
 - Missing-role `403 Forbidden` responses no longer expose the exact required role in debug builds and now use the same
   generic response in every build profile. The role remains available as a structured log field when the explicit
   `dangerously_log_authentication_errors(level)` setting is enabled.
@@ -40,8 +41,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   shared refresh still survives cancellation of an individual validation waiter. Attempting an on-demand refresh
   outside a Tokio runtime now panics promptly instead of deadlocking. The last successfully retrieved keys remain
   available until a later refresh succeeds.
-- Malformed `exp`, `nbf`, and `iat` claims now fail closed. In particular, a non-integer `exp` returns `401
-  Unauthorized` instead of `500 Internal Server Error`.
+- Malformed `exp` and `iat` claims, and malformed `nbf` claims when `nbf` validation is enabled, now fail closed. In
+  particular, a non-integer `exp` returns `401 Unauthorized` instead of `500 Internal Server Error`.
 - Query-parameter tokens containing invalid UTF-8 now return `401 Unauthorized` instead of panicking.
 - Empty or whitespace-only credentials no longer block lower-priority token extractors. `Authorization: Bearer ` now
   yields `MissingBearerToken`, while `?token=` yields `EmptyTokenQueryParam`.
@@ -77,10 +78,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Raised the minimum supported Rust version from 1.85 to 1.89. Starting with this release, an MSRV increase is no longer
   considered a breaking change, matching common practice in the Rust ecosystem.
 - Provider requests now share a connection-pooled HTTP client with default connect and request timeouts of 10 and 30
-  seconds. Non-success HTTP responses now fail discovery immediately.
-- JWKS refreshes for unverifiable tokens with unknown key IDs are now single-flight, rate-limited after success, and
-  retried with exponential backoff after failure. Requests wait at most five seconds for a shared refresh, including
-  initial discovery. Refreshes remain on demand, so removed keys stay trusted until another refresh or restart.
+  seconds. Non-success HTTP responses are now reported as request errors, and retried like them, instead of being
+  decoded as JSON.
+- On-demand OIDC discovery and JWKS refreshes for unverifiable tokens with unknown key IDs are now single-flight,
+  rate-limited after success, and retried with exponential backoff after failure. Requests wait at most five seconds
+  for a shared refresh, including initial discovery. The `KeycloakConfig::retry` attempts still apply within each
+  refresh. Refreshes remain on demand, so removed keys stay trusted until another refresh or restart.
+- `KeycloakAuthService::poll_ready` no longer waits for initial discovery. Requests that need decoding keys wait inside
+  the service call instead, bounded by the five-second refresh wait.
+- `KeycloakAuthInstance::is_operational` now reports whether at least one usable decoding key is cached. A discovery
+  without usable keys is no longer operational, and a failed refresh no longer clears the operational state while the
+  previous keys remain usable.
 - `401 Unauthorized` responses for missing or unusable credentials now carry a `WWW-Authenticate: Bearer` challenge.
 - Claims validation now runs once after signature verification, preserving meaningful expiry, audience, and malformed
   token errors regardless of cached-key order. Tokens already verified by a cached key no longer trigger a pointless
