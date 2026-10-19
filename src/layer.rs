@@ -4,6 +4,7 @@ use nonempty::NonEmpty;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::marker::PhantomData;
+use std::sync::Once;
 use std::{fmt::Debug, sync::Arc};
 use tower::Layer;
 use typed_builder::TypedBuilder;
@@ -150,8 +151,8 @@ where
     /// typed-token parsing. Use [`ValidationPolicy::strict`] to require an audience.
     ///
     /// A policy that defines its own audiences takes precedence. Pass an empty vector here in that
-    /// case. A differing non-empty value is ignored and logged as a warning when a service or
-    /// direct validator is created.
+    /// case. A differing non-empty value is ignored and logged as a warning when the first service
+    /// or direct validation is created from this layer or one of its clones.
     pub expected_audiences: Vec<String>,
 
     /// Validation requirements applied to every presented token.
@@ -186,6 +187,10 @@ where
 
     #[builder(default = uuid::Uuid::now_v7(), setter(skip))]
     id: uuid::Uuid,
+
+    /// Ensures configuration warnings are logged once per layer, not once per direct validation.
+    #[builder(default = Arc::new(Once::new()), setter(skip))]
+    configuration_warnings: Arc<Once>,
 
     #[builder(default = Arc::new(SystemClock), setter(skip))]
     pub(crate) clock: Arc<dyn Clock>,
@@ -233,30 +238,33 @@ where
 
     /// A validator snapshotting the layer's current validation configuration. Built once per
     /// service created from this layer and once per direct [`Self::validate_raw_token`] call.
+    /// Configuration warnings are logged only for the first validator.
     pub(crate) fn validator(&self) -> Validator<R, Extra> {
-        if let Some(policy_audiences) = self
-            .validation_policy
-            .audiences_conflicting_with(&self.expected_audiences)
-        {
-            tracing::warn!(
-                layer_audiences = ?self.expected_audiences,
-                ?policy_audiences,
-                "The validation policy defines its own expected audiences, which differ from the \
-                 layer's `expected_audiences`. Only the policy's audiences are enforced."
-            );
-        }
         let policy = self
             .validation_policy
             .clone()
             .with_inherited_audiences(&self.expected_audiences);
-        if policy.requires_audience_but_has_none() {
-            // Fail-closed misconfiguration: turning this into a construction error is planned
-            // together with fallible layer configuration.
-            tracing::warn!(
-                "The validation policy requires a matching audience, but no expected audiences \
-                 are configured. Every token will be rejected."
-            );
-        }
+        self.configuration_warnings.call_once(|| {
+            if let Some(policy_audiences) = self
+                .validation_policy
+                .audiences_conflicting_with(&self.expected_audiences)
+            {
+                tracing::warn!(
+                    layer_audiences = ?self.expected_audiences,
+                    ?policy_audiences,
+                    "The validation policy defines its own expected audiences, which differ from \
+                     the layer's `expected_audiences`. Only the policy's audiences are enforced."
+                );
+            }
+            if policy.requires_audience_but_has_none() {
+                // Fail-closed misconfiguration: turning this into a construction error is planned
+                // together with fallible layer configuration.
+                tracing::warn!(
+                    "The validation policy requires a matching audience, but no expected \
+                     audiences are configured. Every token will be rejected."
+                );
+            }
+        });
         Validator::builder()
             .key_source(self.instance.clone())
             .policy(policy)
