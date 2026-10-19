@@ -47,6 +47,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   yields `MissingBearerToken`, while `?token=` yields `EmptyTokenQueryParam`.
 - `Profile::full_name` now falls back to Keycloak's standard `name` claim when no `full_name` claim is present. Tokens
   carrying both claims remain accepted and keep reading `full_name`.
+- The `expect_role!`, `expect_roles!`, `not_expect_role!`, and `not_expect_roles!` macros now work when the crate is
+  renamed in `Cargo.toml` and no longer require `axum` as a direct dependency of the calling crate.
 - Server URLs with a trailing slash after a non-root path, such as `https://host/auth/`, now produce the correct OIDC
   discovery URL without a duplicate slash.
 

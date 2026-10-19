@@ -114,10 +114,23 @@ pub trait ExpectRoles<R: Role> {
 /// This macro returns early on failure, so the surrounding function must return an
 /// [`axum::response::Response`]. Use [`role::ExpectRoles`](crate::role::ExpectRoles) directly when
 /// another return type is needed.
+///
+/// ```
+/// use axum::{
+///     Extension,
+///     response::{IntoResponse, Response},
+/// };
+/// use axum_keycloak_auth::{expect_roles, token::KeycloakToken};
+///
+/// async fn admin_only(Extension(token): Extension<KeycloakToken<String>>) -> Response {
+///     expect_roles!(&token, &["administrator", "auditor"]);
+///     "Welcome, administrator.".into_response()
+/// }
+/// ```
 macro_rules! expect_roles {
     ($token: expr, $roles: expr) => {
-        if let Err(err) = axum_keycloak_auth::role::ExpectRoles::expect_roles($token, $roles) {
-            return axum::response::IntoResponse::into_response(err);
+        if let Err(err) = $crate::role::ExpectRoles::expect_roles($token, $roles) {
+            return $crate::__private::IntoResponse::into_response(err);
         }
     };
 }
@@ -130,8 +143,8 @@ macro_rules! expect_roles {
 /// another return type is needed.
 macro_rules! expect_role {
     ($token: expr, $role: expr) => {
-        if let Err(err) = axum_keycloak_auth::role::ExpectRoles::expect_roles($token, &[$role]) {
-            return axum::response::IntoResponse::into_response(err);
+        if let Err(err) = $crate::role::ExpectRoles::expect_roles($token, &[$role]) {
+            return $crate::__private::IntoResponse::into_response(err);
         }
     };
 }
@@ -144,8 +157,8 @@ macro_rules! expect_role {
 /// another return type is needed.
 macro_rules! not_expect_roles {
     ($token: expr, $roles: expr) => {
-        if let Err(err) = axum_keycloak_auth::role::ExpectRoles::not_expect_roles($token, $roles) {
-            return axum::response::IntoResponse::into_response(err);
+        if let Err(err) = $crate::role::ExpectRoles::not_expect_roles($token, $roles) {
+            return $crate::__private::IntoResponse::into_response(err);
         }
     };
 }
@@ -158,9 +171,8 @@ macro_rules! not_expect_roles {
 /// another return type is needed.
 macro_rules! not_expect_role {
     ($token: expr, $role: expr) => {
-        if let Err(err) = axum_keycloak_auth::role::ExpectRoles::not_expect_roles($token, &[$role])
-        {
-            return axum::response::IntoResponse::into_response(err);
+        if let Err(err) = $crate::role::ExpectRoles::not_expect_roles($token, &[$role]) {
+            return $crate::__private::IntoResponse::into_response(err);
         }
     };
 }

@@ -143,6 +143,12 @@ pub use url::Url;
 /// Non-empty collection type used for configured token extractors.
 pub use nonempty::NonEmpty;
 
+/// Items used by this crate's exported macros. Not public API.
+#[doc(hidden)]
+pub mod __private {
+    pub use axum::response::IntoResponse;
+}
+
 use serde::de::DeserializeOwned;
 
 /// Controls whether failed authentication stops the request.
