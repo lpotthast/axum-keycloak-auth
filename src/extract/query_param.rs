@@ -21,7 +21,8 @@ pub(crate) enum QueryParamExtractError {
 /// Extracts a token from a query parameter.
 ///
 /// The parameter name defaults to `token`. If the parameter occurs more than once, only the first
-/// value is considered.
+/// value is considered. Whitespace around the token is ignored, and empty and whitespace-only
+/// token values are rejected.
 ///
 /// # Security
 ///
@@ -62,12 +63,16 @@ impl QueryParamTokenExtractor {
         // One allocation at most: a percent-decoded value is taken over as-is, a plain one is
         // copied once. Returning a borrowed token is not possible here because
         // `DuplicateQS::values` ties the lifetime of its key argument to the query string.
-        let first_token = String::from_utf8(first_token.into_owned())
+        let mut first_token = String::from_utf8(first_token.into_owned())
             .map_err(|_err| QueryParamExtractError::InvalidUtf8)?;
+
+        // A JWT never contains whitespace. Trim in place, keeping the single allocation.
+        first_token.truncate(first_token.trim_end().len());
+        first_token.drain(..first_token.len() - first_token.trim_start().len());
 
         // A blank value can never be a JWT, and reporting it as an extracted token would stop
         // extraction and shadow a valid token in a lower-priority source.
-        if first_token.trim().is_empty() {
+        if first_token.is_empty() {
             return Err(QueryParamExtractError::EmptyToken);
         }
 
@@ -102,7 +107,7 @@ mod tests {
     use assertr::prelude::*;
     use axum::{body::Body, extract::Request};
 
-    use super::{QueryParamExtractError, QueryParamTokenExtractor};
+    use super::{AuthError, QueryParamExtractError, QueryParamTokenExtractor, TokenExtractor};
 
     fn request_with_uri(uri: &str) -> Request {
         Request::builder()
@@ -143,6 +148,22 @@ mod tests {
     }
 
     #[test]
+    fn whitespace_around_the_token_is_ignored() {
+        let extractor = QueryParamTokenExtractor::default();
+        for uri in [
+            "/?token=%20abc.def.ghi",
+            "/?token=abc.def.ghi%20",
+            "/?token=%09%20abc.def.ghi%20%09",
+        ] {
+            assert_that!(extractor.try_extract(&request_with_uri(uri)))
+                .with_subject_name(uri)
+                .ok()
+                .some()
+                .is_equal_to("abc.def.ghi");
+        }
+    }
+
+    #[test]
     fn single_valid_token_is_returned() {
         let extractor = QueryParamTokenExtractor::default();
         assert_that!(extractor.try_extract(&request_with_uri("/?token=value")))
@@ -178,5 +199,44 @@ mod tests {
             .ok()
             .some()
             .is_equal_to("value");
+    }
+
+    // ----- The public `TokenExtractor` contract ------------------------------------------------
+
+    #[test]
+    fn extract_returns_the_token() {
+        assert_that!(
+            QueryParamTokenExtractor::default().extract(&request_with_uri("/?token=abc.def.ghi"))
+        )
+        .ok()
+        .is_equal_to("abc.def.ghi");
+    }
+
+    #[test]
+    fn extract_distinguishes_an_absent_query_string_from_an_absent_parameter() {
+        let extractor = QueryParamTokenExtractor::default();
+        assert_that!(extractor.extract(&request_with_uri("/")))
+            .is_matching(pattern!(Err(AuthError::MissingQueryParams)));
+        assert_that!(extractor.extract(&request_with_uri("/?other=value")))
+            .is_matching(pattern!(Err(AuthError::MissingTokenQueryParam)));
+    }
+
+    #[test]
+    fn extract_reports_a_blank_token() {
+        for uri in ["/?token", "/?token=", "/?token=%20"] {
+            assert_that!(QueryParamTokenExtractor::default().extract(&request_with_uri(uri)))
+                .with_subject_name(uri)
+                .is_matching(pattern!(Err(AuthError::EmptyTokenQueryParam)));
+        }
+    }
+
+    #[test]
+    fn extract_reports_invalid_utf8_as_an_invalid_token() {
+        let expected_reason = QueryParamExtractError::InvalidUtf8.to_string();
+
+        assert_that!(QueryParamTokenExtractor::default().extract(&request_with_uri("/?token=%FF")))
+            .is_matching(pattern!(
+                Err(AuthError::InvalidToken { reason }) if reason == &expected_reason
+            ));
     }
 }

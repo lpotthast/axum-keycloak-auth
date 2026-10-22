@@ -27,7 +27,8 @@ pub(crate) enum AuthHeaderExtractError {
 
 /// Extracts a token from an `Authorization: Bearer <token>` header.
 ///
-/// The `Bearer ` prefix is case-sensitive. Empty and whitespace-only token values are rejected.
+/// The `Bearer ` prefix is case-sensitive. Whitespace around the token is ignored, and empty and
+/// whitespace-only token values are rejected.
 #[derive(Debug, Clone, Default)]
 pub struct AuthHeaderTokenExtractor {}
 
@@ -46,11 +47,13 @@ impl AuthHeaderTokenExtractor {
                 reason: err.to_string(),
             })?
             .strip_prefix("Bearer ")
-            .ok_or(AuthHeaderExtractError::MissingBearerToken)?;
+            .ok_or(AuthHeaderExtractError::MissingBearerToken)?
+            // The scheme may be followed by several spaces, and a JWT never contains whitespace.
+            .trim();
 
         // A blank value can never be a JWT, and reporting it as an extracted token would stop
         // extraction and shadow a valid token in a lower-priority source.
-        if token.trim().is_empty() {
+        if token.is_empty() {
             return Err(AuthHeaderExtractError::EmptyBearerToken);
         }
 
@@ -80,7 +83,7 @@ mod tests {
     use axum::{body::Body, extract::Request};
     use http::HeaderValue;
 
-    use super::{AuthHeaderExtractError, AuthHeaderTokenExtractor};
+    use super::{AuthError, AuthHeaderExtractError, AuthHeaderTokenExtractor, TokenExtractor};
 
     fn request_with_authorization(value: &str) -> Request {
         Request::builder()
@@ -127,6 +130,23 @@ mod tests {
     }
 
     #[test]
+    fn whitespace_around_the_bearer_token_is_ignored() {
+        for authorization in [
+            "Bearer  abc.def.ghi",
+            "Bearer abc.def.ghi ",
+            "Bearer \t abc.def.ghi \t",
+        ] {
+            assert_that!(AuthHeaderTokenExtractor::try_extract(
+                &request_with_authorization(authorization)
+            ))
+            .with_subject_name(format!("{authorization:?}"))
+            .ok()
+            .some()
+            .is_equal_to("abc.def.ghi");
+        }
+    }
+
+    #[test]
     fn unexpected_authorization_header_shapes_yield_typed_errors() {
         assert_that!(AuthHeaderTokenExtractor::try_extract(
             &request_with_authorization("Basic abc.def.ghi")
@@ -147,5 +167,52 @@ mod tests {
         assert_that!(AuthHeaderTokenExtractor::try_extract(&request)).is_matching(pattern!(Err(
             AuthHeaderExtractError::InvalidHeaderValue { .. }
         )));
+    }
+
+    // ----- The public `TokenExtractor` contract ------------------------------------------------
+
+    #[test]
+    fn extract_returns_the_trimmed_bearer_token() {
+        let request = request_with_authorization("Bearer  abc.def.ghi ");
+
+        assert_that!(AuthHeaderTokenExtractor::default().extract(&request))
+            .ok()
+            .is_equal_to("abc.def.ghi");
+    }
+
+    #[test]
+    fn extract_reports_an_absent_header() {
+        assert_that!(AuthHeaderTokenExtractor::default().extract(&Request::new(Body::empty())))
+            .is_matching(pattern!(Err(AuthError::MissingAuthorizationHeader)));
+    }
+
+    #[test]
+    fn extract_reports_an_unreadable_header_with_its_reason() {
+        let invalid_header =
+            HeaderValue::from_bytes(&[0xff]).expect("test header value must build");
+        let expected_reason = invalid_header
+            .to_str()
+            .expect_err("the test header value must not be visible ASCII")
+            .to_string();
+        let request = Request::builder()
+            .header(http::header::AUTHORIZATION, invalid_header)
+            .body(Body::empty())
+            .expect("test request must build");
+
+        assert_that!(AuthHeaderTokenExtractor::default().extract(&request)).is_matching(pattern!(
+            Err(AuthError::InvalidAuthorizationHeader { reason }) if reason == &expected_reason
+        ));
+    }
+
+    #[test]
+    fn extract_reports_a_missing_or_blank_bearer_token_as_missing() {
+        for authorization in ["Basic abc.def.ghi", "Bearer ", "Bearer  \t "] {
+            assert_that!(
+                AuthHeaderTokenExtractor::default()
+                    .extract(&request_with_authorization(authorization))
+            )
+            .with_subject_name(format!("{authorization:?}"))
+            .is_matching(pattern!(Err(AuthError::MissingBearerToken)));
+        }
     }
 }

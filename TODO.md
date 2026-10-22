@@ -82,3 +82,12 @@ struct with `token` and `raw_claims: Option<RawClaims>` fields instead.
   `AuthError::NoDecodingKeys`, which is a server-side outage rather than a client error.
 - Replace the `KeycloakConfig::retry` tuple `(usize, u64)` with a named type that uses `Duration`.
 - Rename `Profile::full_name` to `name`, matching Keycloak's standard claim.
+- Enforce Keycloak Authorization Services policies with a separate authorization layer, giving the crate a
+  Keycloak-specific feature beyond JWT validation. Keycloak only ships Java and JavaScript policy enforcers. Two modes:
+  `TokenPermissions` checks the `authorization.permissions` claim of a locally validated RPT, and `RemoteDecision` asks
+  Keycloak through the UMA grant with `response_mode=decision`. Keep authentication and authorization separate (`401`
+  versus `403`, plus a distinct error for an unreachable policy endpoint), and give remote decisions their own timeout,
+  health status, and optional cache. Leave out the UMA Protection API, permission tickets, and policy administration.
+- Add Standard Token Exchange V2 (RFC 8693) for downstream calls, with ergonomic audience reduction and downscoping. Use
+  the discovered token endpoint and the caller's HTTP client, redact secrets and tokens from `Debug` and logs, keep the
+  raw bearer token out of `KeycloakToken`, and do not retry ambiguous token requests. Do not support legacy V1.

@@ -24,7 +24,6 @@ enum RefreshError {
     Discovery(AuthError),
     NoUsableDecodingKeys,
     Panicked,
-    Cancelled,
 }
 
 impl RefreshError {
@@ -46,7 +45,6 @@ impl RefreshError {
                 String::from("The provider returned no usable decoding keys")
             }
             RefreshError::Panicked => String::from("The discovery operation panicked"),
-            RefreshError::Cancelled => String::from("The discovery operation was cancelled"),
         }
     }
 }
@@ -87,8 +85,11 @@ struct RefreshState {
     last_error: Option<(Instant, RefreshError)>,
     consecutive_failures: u32,
     /// The earliest instant at which a new on-demand refresh may start. Only consulted while no
-    /// discovery is pending. Set by every terminated discovery, except that a successful initial
-    /// discovery clears it so the first token with an unknown `kid` may refresh immediately.
+    /// discovery is pending. Set by every discovery that succeeds or fails, except that a
+    /// successful initial discovery clears it so the first token with an unknown `kid` may refresh
+    /// immediately. A discovery whose task is dropped before it finishes leaves it untouched,
+    /// whether a shutting-down runtime dropped it, the last lifecycle owner aborted it, or it could
+    /// not be spawned outside a runtime.
     next_refresh_at: Option<Instant>,
     /// Whether a discovery is currently in flight. Guarded by the surrounding lock, this is what
     /// makes refreshes single-flight.
@@ -127,7 +128,7 @@ impl RefreshState {
     fn finish(
         &mut self,
         request: &DiscoveryRequest,
-        result: &DiscoveryResult,
+        result: DiscoveryResult,
         current_data: Option<Arc<DiscoveredData>>,
         now: Instant,
         instance_id: uuid::Uuid,
@@ -154,12 +155,12 @@ impl RefreshState {
                         now.checked_add(policy.success_delay(instance_id, request.attempt))
                     }
                 };
-                Some(data.clone())
+                Some(data)
             }
             Err(error) => {
                 self.record_failure(
                     request,
-                    RefreshError::Discovery(error.clone()),
+                    RefreshError::Discovery(error),
                     now,
                     instance_id,
                     policy,
@@ -190,12 +191,6 @@ impl RefreshState {
                     "OIDC refresh panicked; keeping the previous cache state."
                 );
             }
-            RefreshError::Cancelled => {
-                tracing::warn!(
-                    error = %error.message(),
-                    "OIDC refresh was cancelled; keeping the previous cache state."
-                );
-            }
         }
         self.last_error = Some((now, error));
         self.consecutive_failures = self.consecutive_failures.saturating_add(1);
@@ -218,7 +213,7 @@ enum DispatchOutcome {
 struct DispatchGuard {
     request: DiscoveryRequest,
     refresh_state: Arc<Mutex<RefreshState>>,
-    published: Arc<watch::Sender<(usize, Option<Arc<DiscoveredData>>)>>,
+    published: watch::Sender<(usize, Option<Arc<DiscoveredData>>)>,
     clock: Arc<dyn Clock>,
     instance_id: uuid::Uuid,
     policy: RefreshPolicy,
@@ -229,7 +224,7 @@ impl DispatchGuard {
     fn new(
         request: DiscoveryRequest,
         refresh_state: Arc<Mutex<RefreshState>>,
-        published: Arc<watch::Sender<(usize, Option<Arc<DiscoveredData>>)>>,
+        published: watch::Sender<(usize, Option<Arc<DiscoveredData>>)>,
         clock: Arc<dyn Clock>,
         instance_id: uuid::Uuid,
         policy: RefreshPolicy,
@@ -262,7 +257,7 @@ impl DispatchGuard {
         let data = match outcome {
             DispatchOutcome::Completed(result) => state.finish(
                 &self.request,
-                &result,
+                result,
                 current_data,
                 now,
                 self.instance_id,
@@ -278,14 +273,12 @@ impl DispatchGuard {
                 );
                 current_data
             }
+            // The task was dropped before its operation finished: its runtime shut down, the last
+            // lifecycle owner aborted it, or it could not be spawned outside a runtime. None of
+            // this says anything about the provider. Neither record a failure nor back off, so
+            // that a later runtime may retry immediately.
             DispatchOutcome::Cancelled => {
-                state.record_failure(
-                    &self.request,
-                    RefreshError::Cancelled,
-                    now,
-                    self.instance_id,
-                    self.policy,
-                );
+                tracing::debug!("OIDC refresh was cancelled; keeping the previous cache state.");
                 current_data
             }
         };
@@ -314,7 +307,7 @@ pub(crate) struct Discovery {
     refresh_state: Arc<Mutex<RefreshState>>,
     /// Atomically publishes each terminated discovery's generation and resulting cached data,
     /// and doubles as the completion signal for waiters.
-    published: Arc<watch::Sender<(usize, Option<Arc<DiscoveredData>>)>>,
+    published: watch::Sender<(usize, Option<Arc<DiscoveredData>>)>,
     /// Cancels the detached operation when this last lifecycle owner is dropped. A completed
     /// operation may leave a stale handle here until the next spawn. Aborting it is harmless.
     in_flight_abort: Mutex<Option<tokio::task::AbortHandle>>,
@@ -346,7 +339,7 @@ impl Discovery {
             endpoint,
             op,
             refresh_state: Arc::new(Mutex::new(RefreshState::initial(clock.now_monotonic()))),
-            published: Arc::new(watch::Sender::new((0, None))),
+            published: watch::Sender::new((0, None)),
             in_flight_abort: Mutex::new(None),
             clock,
             policy,
@@ -399,6 +392,10 @@ impl Discovery {
     /// The wait is capped by the policy's `max_refresh_wait`, so a stalled provider does not block
     /// requests indefinitely. The refresh itself continues independently of this waiter while the
     /// lifecycle remains owned.
+    ///
+    /// Returns whether a discovery terminated after `observed_generation`, meaning the cached data
+    /// may have changed and a retry is worthwhile. A terminated discovery may also have failed or
+    /// been dropped and left the data as it was, so `true` does not guarantee new keys.
     pub(crate) async fn refresh_if_needed(&self, observed_generation: usize) -> bool {
         let request = {
             let now = self.clock.now_monotonic();
@@ -424,6 +421,8 @@ impl Discovery {
                 Some(request)
             }
         };
+        // Spawn outside the refresh-state lock: during runtime shutdown, Tokio can drop the new
+        // task synchronously here, and the dispatch guard then needs to re-lock that state.
         if let Some(request) = request {
             self.spawn(request);
         }
@@ -543,7 +542,7 @@ impl Discovery {
                 Box::pin(async { panic!("a resolved test discovery cannot re-discover") })
             }),
             refresh_state: Arc::new(Mutex::new(RefreshState::resolved(now))),
-            published: Arc::new(watch::Sender::new((1, Some(Arc::new(data))))),
+            published: watch::Sender::new((1, Some(Arc::new(data)))),
             in_flight_abort: Mutex::new(None),
             clock,
             policy: RefreshPolicy::default(),
@@ -581,12 +580,13 @@ mod tests {
         sync::{
             Arc, Mutex, PoisonError,
             atomic::{AtomicBool, AtomicUsize, Ordering},
+            mpsc,
         },
         time::Duration,
     };
 
     use assertr::{
-        matchers::{IsFalse, IsSome, eq},
+        matchers::{IsFalse, IsNone, IsSome, eq},
         prelude::*,
     };
     use jsonwebtoken::Algorithm;
@@ -597,7 +597,7 @@ mod tests {
         http::default_http_client,
         server_url::ServerUrl,
         test_support::{
-            ManualClock, MockOidcServer, RSA_KEY_A, RSA_KEY_B, TEST_REALM,
+            ManualClock, MockOidcServer, RSA_KEY_A, RSA_KEY_B, TEST_REALM, TEST_TIMEOUT,
             refresh_policy_without_jitter, static_discovered_data, test_server_url, wait_until,
             within_test_timeout,
         },
@@ -637,6 +637,39 @@ mod tests {
         )
         .await;
         discovery
+    }
+
+    /// A clock whose first monotonic reading blocks until the test releases it, signalling once
+    /// it is blocked.
+    struct BlockingMonotonicClock {
+        inner: Arc<ManualClock>,
+        block_next: AtomicBool,
+        blocked: Mutex<Option<mpsc::SyncSender<()>>>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl Clock for BlockingMonotonicClock {
+        fn now_utc(&self) -> time::OffsetDateTime {
+            self.inner.now_utc()
+        }
+
+        fn now_monotonic(&self) -> std::time::Instant {
+            if self.block_next.swap(false, Ordering::SeqCst) {
+                self.blocked
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take()
+                    .expect("the blocking clock must signal exactly once")
+                    .send(())
+                    .expect("the test must still be waiting for the clock to block");
+                self.release
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .recv()
+                    .expect("the test must release the blocked clock");
+            }
+            self.inner.now_monotonic()
+        }
     }
 
     /// The discovery endpoint of the offline fixture realm, which is never contacted.
@@ -869,15 +902,17 @@ mod tests {
 
         drop(runtime);
 
+        // Destroying the runtime says nothing about the provider, so the cancelled discovery is
+        // neither booked as a failure nor backed off, and the next runtime may retry immediately.
         assert_that!(discovery.snapshot()).matches(partial!(RefreshStateSnapshot {
             pending: IsFalse,
             generation: eq(1),
-            consecutive_failures: eq(1),
-            last_error_at: IsSome,
+            consecutive_failures: eq(0),
+            last_error_at: IsNone,
+            next_refresh_at: IsNone,
             ..
         }));
 
-        clock.advance(time::Duration::seconds(1));
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -890,6 +925,68 @@ mod tests {
             pending: IsFalse,
             generation: eq(2),
             consecutive_failures: eq(0),
+            ..
+        }));
+    }
+
+    /// Tokio drops a task spawned during runtime shutdown synchronously, inside `spawn`. Its
+    /// dispatch guard then locks the refresh state, so spawning while holding that lock would
+    /// deadlock the worker.
+    ///
+    /// This relies on `refresh_if_needed` reading the monotonic clock exactly once, right before
+    /// it locks the refresh state.
+    #[test]
+    fn runtime_shutdown_during_on_demand_spawn_does_not_deadlock_the_worker() {
+        let mut discovery = Discovery::resolved(fixture_endpoint(), static_discovered_data());
+        let (clock_blocked_tx, clock_blocked_rx) = mpsc::sync_channel(1);
+        let (release_clock_tx, release_clock_rx) = mpsc::sync_channel(1);
+        discovery.clock = Arc::new(BlockingMonotonicClock {
+            inner: ManualClock::at_validation_time(),
+            block_next: AtomicBool::new(true),
+            blocked: Mutex::new(Some(clock_blocked_tx)),
+            release: Mutex::new(release_clock_rx),
+        });
+        discovery.policy = refresh_policy_without_jitter();
+        let discovery = Arc::new(discovery);
+
+        let (worker_stopped_tx, worker_stopped_rx) = mpsc::sync_channel(1);
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .on_thread_stop(move || {
+                let _ = worker_stopped_tx.try_send(());
+            })
+            .build()
+            .expect("the test runtime must build");
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let discovery_for_refresh = discovery.clone();
+        let _refresh = runtime.spawn(async move {
+            result_tx
+                .send(discovery_for_refresh.refresh_if_needed(1).await)
+                .expect("the test must still be waiting for the refresh result");
+        });
+        clock_blocked_rx
+            .recv_timeout(TEST_TIMEOUT)
+            .expect("the refresh must block immediately before taking the refresh-state lock");
+
+        runtime.shutdown_background();
+        worker_stopped_rx
+            .recv_timeout(TEST_TIMEOUT)
+            .expect("an idle runtime worker must close the owned-task list during shutdown");
+        release_clock_tx
+            .send(())
+            .expect("the blocked refresh must still be waiting for release");
+
+        let refreshed = result_rx
+            .recv_timeout(TEST_TIMEOUT)
+            .expect("runtime shutdown must not deadlock the refresh worker");
+        assert_that!(refreshed).is_true();
+        assert_that!(discovery.snapshot()).matches(partial!(RefreshStateSnapshot {
+            pending: IsFalse,
+            generation: eq(2),
+            consecutive_failures: eq(0),
+            last_error_at: IsNone,
+            next_refresh_at: IsNone,
             ..
         }));
     }

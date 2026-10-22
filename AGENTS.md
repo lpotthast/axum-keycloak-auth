@@ -4,7 +4,11 @@
 
 Use `## [Unreleased]` in `CHANGELOG.md` as the default landing place for change entries while work is in progress.  
 Use the last "## [version] - date" section if this version was not yet released. It is the next planned upcoming release  
-and all changes must be appended to that section instead of falsely being added to "## [Unreleased]".
+and all changes must be merged into that section instead of falsely being added to "## [Unreleased]".
+
+Every changelog item must describe only the net change from the exact immediately preceding release to the current  
+release candidate. Never infer or describe changes relative to intermediate development states, whether committed or  
+uncommitted.
 
 1. Record the net release-notable effect of each change under the appropriate section in `## [Unreleased]`.  
    Before adding a new item, inspect existing `Unreleased` entries for the same feature, fix, or design area.  

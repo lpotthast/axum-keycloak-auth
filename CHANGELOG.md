@@ -44,8 +44,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Tokens with a malformed `exp` or `iat` claim are now rejected with `401 Unauthorized`, as are tokens with a malformed
   `nbf` claim when `nbf` validation is enabled. Previously, a non-integer `exp` caused a `500 Internal Server Error`.
 - Query-parameter tokens containing invalid UTF-8 now return `401 Unauthorized` instead of panicking.
-- Empty or whitespace-only credentials no longer block lower-priority token extractors. `Authorization: Bearer ` now
-  yields `MissingBearerToken`, while `?token=` yields `EmptyTokenQueryParam`.
+- Whitespace around Authorization-header and query-parameter tokens is now ignored, so several spaces after the
+  `Bearer ` scheme are accepted as RFC 6750 permits. Empty or whitespace-only credentials no longer block
+  lower-priority token extractors.
+  `Authorization: Bearer ` now yields `MissingBearerToken`, while `?token=` yields `EmptyTokenQueryParam`.
 - `Profile::full_name` now falls back to Keycloak's standard `name` claim when no `full_name` claim is present. Tokens
   carrying both claims remain accepted and keep reading `full_name`.
 - The `expect_role!`, `expect_roles!`, `not_expect_role!`, and `not_expect_roles!` macros now work when the crate is
@@ -89,7 +91,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - On-demand OIDC discovery and JWKS refreshes for unverifiable tokens with unknown key IDs are now single-flight,
   rate-limited after success, and retried with exponential backoff after failure. Requests wait at most five seconds
   for a shared refresh, including initial discovery. The `KeycloakConfig::retry` attempts still apply within each
-  refresh. Refreshes remain on demand, so removed keys stay trusted until another refresh or restart.
+  refresh. A refresh whose task is dropped before it finishes, for example by a shutting-down Tokio runtime or because
+  it was attempted outside a runtime, counts as neither a failure nor a reason to back off.
+  Refreshes remain on demand, so removed keys stay trusted until another refresh or restart.
 - `KeycloakAuthService::poll_ready` no longer waits for initial discovery. Requests that need decoding keys wait inside
   the service call instead, bounded by the five-second refresh wait.
 - `KeycloakAuthInstance::is_operational` now reports whether at least one usable decoding key is cached. A discovery

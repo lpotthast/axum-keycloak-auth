@@ -167,6 +167,7 @@ pub mod extract;
 mod http;
 pub mod instance;
 pub mod layer;
+mod logging;
 #[allow(missing_docs)]
 pub mod oidc;
 pub mod oidc_discovery;

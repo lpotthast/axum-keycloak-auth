@@ -334,9 +334,72 @@ pub struct ProfileAndEmail {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use assertr::prelude::*;
 
-    use super::{Profile, ProfileAndEmail, StandardClaims};
+    use crate::{
+        error::AuthError,
+        role::{ExpectRoles, KeycloakRole},
+    };
+
+    use super::{
+        Access, KeycloakToken, Profile, ProfileAndEmail, RealmAccess, ResourceAccess,
+        StandardClaims,
+    };
+
+    fn token_with_realm_and_client_roles() -> KeycloakToken<String, ()> {
+        KeycloakToken::parse(StandardClaims {
+            exp: 1_700_000_100,
+            iat: 1_700_000_000,
+            jti: String::from("test-token"),
+            iss: String::from("https://keycloak.example/realms/test"),
+            aud: vec![String::from("account")],
+            sub: String::from("test-user"),
+            typ: String::from("Bearer"),
+            azp: String::from("account"),
+            realm_access: Some(RealmAccess(Access {
+                roles: vec![String::from("realm-role")],
+            })),
+            resource_access: Some(ResourceAccess(HashMap::from([(
+                String::from("account"),
+                Access {
+                    roles: vec![String::from("client-role")],
+                },
+            )]))),
+            extra: (),
+        })
+        .expect("the test claims must form a token")
+    }
+
+    #[test]
+    fn parsing_preserves_the_realm_and_client_scope_of_roles() {
+        assert_that!(token_with_realm_and_client_roles().roles).is_equal_to(vec![
+            KeycloakRole::Realm {
+                role: String::from("realm-role"),
+            },
+            KeycloakRole::Client {
+                client: String::from("account"),
+                role: String::from("client-role"),
+            },
+        ]);
+    }
+
+    #[test]
+    fn required_and_forbidden_role_checks_search_both_scopes() {
+        let token = token_with_realm_and_client_roles();
+
+        assert_that!(token.expect_roles(&["realm-role", "client-role"])).is_ok();
+        assert_that!(token.not_expect_roles(&["absent-role"])).is_ok();
+        assert_that!(token.expect_roles(&["missing-role"])).is_matching(pattern!(
+            Err(AuthError::MissingExpectedRole { role }) if role == "missing-role"
+        ));
+        for role in ["realm-role", "client-role"] {
+            assert_that!(token.not_expect_roles(&[role]))
+                .with_subject_name(role)
+                .is_matching(pattern!(Err(AuthError::UnexpectedRole)));
+        }
+    }
 
     #[test]
     fn profile_full_name_reads_the_standard_name_claim_and_legacy_alias() {

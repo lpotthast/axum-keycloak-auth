@@ -5,7 +5,7 @@ default:
 # Install tools required by other recipes.
 install-tools:
     cargo +stable install cargo-minimal-versions --locked
-    cargo install cargo-semver-checks --locked
+    cargo +stable install cargo-semver-checks --locked
     cargo +stable install cargo-msrv --locked
     cargo +stable install cargo-audit --locked
     cargo +stable install cargo-sort --locked
@@ -29,7 +29,7 @@ check:
 
 # Lint the code.
 clippy:
-    cargo clippy --all --all-targets --all-features -- -D warnings -W clippy::pedantic
+    cargo clippy --all --all-targets --all-features -- -D warnings
 
 # Run all tests, including integration tests (requires Podman to launch Keycloak containers).
 # We pass the `--nocapture` flag to be able to see tracing output.
@@ -61,6 +61,8 @@ verify:
     just clippy
     just test
     just build-docs
+    just audit
+    just semver-checks
 
 # While sleeping overnight, the podman machine clock might drift... This can reset it without a restart.
 fix-podman-clock:

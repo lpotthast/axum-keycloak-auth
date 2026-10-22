@@ -16,23 +16,12 @@ use crate::{
     error::{AuthError, DecodeSnafu},
     instance::KeycloakAuthInstance,
     layer::UnverifiedJwtHeaderLogging,
+    logging::event_at_level,
     role::{ExpectRoles, Role},
     token::{KeycloakToken, RawClaims, RawToken, StandardClaims},
 };
 
 use super::{KeySource, ValidationPolicy};
-
-macro_rules! log_at_level {
-    ($level:expr, $($event:tt)+) => {
-        match $level {
-            tracing::Level::ERROR => tracing::error!($($event)+),
-            tracing::Level::WARN => tracing::warn!($($event)+),
-            tracing::Level::INFO => tracing::info!($($event)+),
-            tracing::Level::DEBUG => tracing::debug!($($event)+),
-            tracing::Level::TRACE => tracing::trace!($($event)+),
-        }
-    };
-}
 
 /// Result of successful validation.
 #[derive(Debug)]
@@ -261,7 +250,7 @@ where
 
 fn log_raw_claims(level: Option<tracing::Level>, claims: &RawClaims) {
     if let Some(level) = level {
-        log_at_level!(
+        event_at_level!(
             level,
             ?claims,
             "Decoded JWT raw claims (sensitive data logging explicitly enabled)"
@@ -273,7 +262,7 @@ fn log_unverified_jwt_header(logging: Option<UnverifiedJwtHeaderLogging>, header
     match logging {
         None => {}
         Some(UnverifiedJwtHeaderLogging::Metadata(level)) => {
-            log_at_level!(
+            event_at_level!(
                 level,
                 alg = ?header.alg,
                 kid = ?header.kid,
@@ -282,7 +271,7 @@ fn log_unverified_jwt_header(logging: Option<UnverifiedJwtHeaderLogging>, header
             );
         }
         Some(UnverifiedJwtHeaderLogging::Complete(level)) => {
-            log_at_level!(
+            event_at_level!(
                 level,
                 ?header,
                 "Decoded complete unverified JWT header (attacker-controlled header logging \
@@ -683,8 +672,9 @@ mod tests {
         let instance = discovered_instance(&provider).await;
         provider.set_jwks(Vec::new()).await;
 
-        assert_that!(decode_legacy(&instance, &signed_token(&RSA_KEY_B, Some("key-b"))).await)
-            .is_err();
+        assert_invalid_signature(
+            &decode_legacy(&instance, &signed_token(&RSA_KEY_B, Some("key-b"))).await,
+        );
 
         decode_legacy(&instance, &signed_token(&RSA_KEY_A, Some("key-a")))
             .await
@@ -714,8 +704,9 @@ mod tests {
         .expect("syntactically valid JWK fixture must deserialize");
         provider.set_jwks(vec![unusable_jwk]).await;
 
-        assert_that!(decode_legacy(&instance, &signed_token(&RSA_KEY_B, Some("key-b"))).await)
-            .is_err();
+        assert_invalid_signature(
+            &decode_legacy(&instance, &signed_token(&RSA_KEY_B, Some("key-b"))).await,
+        );
 
         decode_legacy(&instance, &signed_token(&RSA_KEY_A, Some("key-a")))
             .await
@@ -743,7 +734,7 @@ mod tests {
         provider.set_jwks(Vec::new()).await;
         let key_b_token = signed_token(&RSA_KEY_B, Some("key-b"));
 
-        assert_that!(decode_legacy(&instance, &key_b_token).await).is_err();
+        assert_invalid_signature(&decode_legacy(&instance, &key_b_token).await);
         decode_legacy(&instance, &signed_token(&RSA_KEY_A, Some("key-a")))
             .await
             .expect("empty refresh must retain key A during backoff");
@@ -803,13 +794,15 @@ mod tests {
         let first_unknown = signed_token(&RSA_KEY_B, Some("key-b"));
         let second_unknown = signed_token(&RSA_KEY_B, Some("key-c"));
 
-        assert_that!(decode_legacy(&instance, &first_unknown).await).is_err();
+        assert_that!(decode_legacy(&instance, &first_unknown).await)
+            .is_matching(pattern!(Err(AuthError::NoDecodingKeys)));
         assert_that!(instance.refresh_state_snapshot().consecutive_failures).is_equal_to(1);
         assert_that!(provider.discovery_requests()).is_equal_to(1);
         assert_that!(provider.jwks_requests()).is_equal_to(1);
 
         clock.advance(time::Duration::seconds(1));
-        assert_that!(decode_legacy(&instance, &second_unknown).await).is_err();
+        assert_that!(decode_legacy(&instance, &second_unknown).await)
+            .is_matching(pattern!(Err(AuthError::NoDecodingKeys)));
         assert_that!(instance.refresh_state_snapshot().consecutive_failures).is_equal_to(2);
         assert_that!(provider.discovery_requests()).is_equal_to(2);
         assert_that!(provider.jwks_requests()).is_equal_to(2);
@@ -1776,13 +1769,12 @@ mod tests {
                 format!("raw-claims opt-in notice logged with opt-in = {log_raw_claims}"),
             );
             if let Some(level) = raw_claims_log_level {
-                let raw_claims_event = contents
-                    .lines()
-                    .find(|line| line.contains("sensitive data logging explicitly enabled"))
-                    .expect("enabled raw-claims logging must emit its event");
-                assert_that!(raw_claims_event)
-                    .with_subject_name("configured raw-claims log level")
-                    .contains(level.as_str());
+                assert_that!(
+                    logs.event_containing("sensitive data logging explicitly enabled")
+                        .level()
+                )
+                .with_subject_name("configured raw-claims log level")
+                .is_equal_to(level);
             }
         }
     }
@@ -1858,27 +1850,25 @@ mod tests {
                     assert_that!(contents).does_not_contain("unverified JWT header");
                 }
                 Some(UnverifiedJwtHeaderLogging::Metadata(level)) => {
-                    assert_header_event_level(&contents, level);
-                    assert_that!(contents)
-                        .contains("alg=RS256")
-                        .contains("kid=Some(\"key-a\")")
-                        .contains("typ=Some(\"selected-typ-marker\")");
+                    assert_header_event_level(&logs, level);
+                    let event = logs.event_containing("Decoded unverified JWT header");
+                    assert_that!(event.field("alg")).is_equal_to(Some("RS256"));
+                    assert_that!(event.field("kid")).is_equal_to(Some("Some(\"key-a\")"));
+                    assert_that!(event.field("typ"))
+                        .is_equal_to(Some("Some(\"selected-typ-marker\")"));
                 }
                 Some(UnverifiedJwtHeaderLogging::Complete(level)) => {
-                    assert_header_event_level(&contents, level);
+                    assert_header_event_level(&logs, level);
                 }
             }
         }
     }
 
-    fn assert_header_event_level(contents: &str, level: tracing::Level) {
-        let header_event = contents
-            .lines()
-            .find(|line| line.contains("Decoded") && line.contains("unverified JWT header"))
-            .expect("enabled unverified-header logging must emit its event");
-        assert_that!(header_event)
+    #[track_caller]
+    fn assert_header_event_level(logs: &CapturedLogs, level: tracing::Level) {
+        assert_that!(logs.event_containing("unverified JWT header").level())
             .with_subject_name("configured unverified-header log level")
-            .contains(level.as_str());
+            .is_equal_to(level);
     }
 
     #[derive(Clone, serde::Deserialize)]

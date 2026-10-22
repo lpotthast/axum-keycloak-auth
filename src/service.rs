@@ -1,4 +1,4 @@
-//! Tower service produced by [`crate::layer::KeycloakAuthLayer`].
+//! Tower service produced by [`KeycloakAuthLayer`].
 
 use std::{
     sync::Arc,
@@ -16,37 +16,20 @@ use crate::{
     error::AuthError,
     extract::{self, TokenExtractionErrorPolicy, TokenExtractor},
     layer::KeycloakAuthLayer,
+    logging::event_at_level,
     role::Role,
     validation::Validator,
 };
 
 fn log_authentication_error(level: tracing::Level, error: &AuthError) {
-    macro_rules! log_at_configured_level {
-        ($level:ident) => {
-            match error {
-                AuthError::MissingExpectedRole { role } => {
-                    tracing::event!(
-                        tracing::Level::$level,
-                        error = %error,
-                        missing_role = %role,
-                        "Authentication failed"
-                    );
-                }
-                _ => tracing::event!(
-                    tracing::Level::$level,
-                    error = %error,
-                    "Authentication failed"
-                ),
-            }
-        };
-    }
-
-    match level {
-        tracing::Level::ERROR => log_at_configured_level!(ERROR),
-        tracing::Level::WARN => log_at_configured_level!(WARN),
-        tracing::Level::INFO => log_at_configured_level!(INFO),
-        tracing::Level::DEBUG => log_at_configured_level!(DEBUG),
-        tracing::Level::TRACE => log_at_configured_level!(TRACE),
+    match error {
+        AuthError::MissingExpectedRole { role } => event_at_level!(
+            level,
+            error = %error,
+            missing_role = %role,
+            "Authentication failed"
+        ),
+        _ => event_at_level!(level, error = %error, "Authentication failed"),
     }
 }
 
@@ -174,7 +157,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::convert::Infallible;
+    use std::{
+        convert::Infallible,
+        sync::{Arc, Mutex},
+    };
 
     use assertr::prelude::*;
     use axum::{
@@ -266,9 +252,9 @@ mod tests {
                 format!("detailed error logging enabled = {enabled}"),
             );
             if let Some(level) = authentication_error_log_level {
-                assert_that!(contents)
+                assert_that!(logs.event_containing("Authentication failed").level())
                     .with_subject_name("configured authentication error log level")
-                    .contains(level.as_str());
+                    .is_equal_to(level);
             }
             assert_that!(contents)
                 .with_subject_name("the raw token is never logged")
@@ -279,40 +265,110 @@ mod tests {
         }
     }
 
+    /// The authentication extensions an inner service observed on its request.
+    #[derive(Debug, PartialEq)]
+    struct ObservedExtensions {
+        raw_claims_subject: Option<String>,
+        token_subject: Option<String>,
+        status: Option<String>,
+    }
+
+    impl ObservedExtensions {
+        fn of(request: &Request<Body>) -> Self {
+            let extensions = request.extensions();
+            Self {
+                raw_claims_subject: extensions
+                    .get::<RawClaims>()
+                    .and_then(|claims| claims["sub"].as_str().map(String::from)),
+                token_subject: extensions
+                    .get::<KeycloakToken<String, Value>>()
+                    .map(|token| token.subject.clone()),
+                status: extensions
+                    .get::<KeycloakAuthStatus<String, Value>>()
+                    .map(|status| match status {
+                        KeycloakAuthStatus::Success(token) => format!("Success({})", token.subject),
+                        KeycloakAuthStatus::Failure(error) => format!("Failure({error:?})"),
+                    }),
+            }
+        }
+    }
+
     #[tokio::test]
-    async fn successful_authentication_inserts_the_mode_specific_extensions() {
-        for passthrough_mode in [PassthroughMode::Block, PassthroughMode::Pass] {
+    async fn extensions_and_inner_service_calls_follow_the_passthrough_mode() {
+        for (passthrough_mode, authenticated, expected_status, expected_observation) in [
+            (
+                PassthroughMode::Block,
+                true,
+                StatusCode::NO_CONTENT,
+                Some(ObservedExtensions {
+                    raw_claims_subject: Some(String::from("test-subject")),
+                    token_subject: Some(String::from("test-subject")),
+                    status: None,
+                }),
+            ),
+            (
+                PassthroughMode::Block,
+                false,
+                StatusCode::UNAUTHORIZED,
+                None,
+            ),
+            (
+                PassthroughMode::Pass,
+                true,
+                StatusCode::NO_CONTENT,
+                Some(ObservedExtensions {
+                    raw_claims_subject: Some(String::from("test-subject")),
+                    token_subject: None,
+                    status: Some(String::from("Success(test-subject)")),
+                }),
+            ),
+            (
+                PassthroughMode::Pass,
+                false,
+                StatusCode::NO_CONTENT,
+                Some(ObservedExtensions {
+                    raw_claims_subject: None,
+                    token_subject: None,
+                    status: Some(String::from("Failure(MissingToken)")),
+                }),
+            ),
+        ] {
+            let case_name = format!("{passthrough_mode:?} mode, authenticated = {authenticated}");
             let mut layer = offline_layer();
             layer.passthrough_mode = passthrough_mode;
             layer.persist_raw_claims = true;
-            let inner = tower::service_fn(move |request: Request<Body>| async move {
-                let extensions = request.extensions();
-                let token_present = match passthrough_mode {
-                    PassthroughMode::Block => {
-                        extensions.get::<KeycloakToken<String, Value>>().is_some()
-                    }
-                    PassthroughMode::Pass => matches!(
-                        extensions.get::<KeycloakAuthStatus<String, Value>>(),
-                        Some(KeycloakAuthStatus::Success(_))
-                    ),
-                };
-                let status = if token_present && extensions.get::<RawClaims>().is_some() {
-                    StatusCode::NO_CONTENT
-                } else {
-                    StatusCode::INTERNAL_SERVER_ERROR
-                };
-                Ok::<_, Infallible>(status.into_response())
+            let observations = Arc::new(Mutex::new(Vec::new()));
+            let inner_observations = Arc::clone(&observations);
+            let inner = tower::service_fn(move |request: Request<Body>| {
+                inner_observations
+                    .lock()
+                    .expect("the observation lock must not be poisoned")
+                    .push(ObservedExtensions::of(&request));
+                no_content(request)
             });
             let mut service = KeycloakAuthService::new(inner, &layer);
 
+            let request = if authenticated {
+                bearer_request(&signed_token(&RSA_KEY_A, Some(TEST_KID)))
+            } else {
+                anonymous_request()
+            };
             let response = service
-                .call(bearer_request(&signed_token(&RSA_KEY_A, Some(TEST_KID))))
+                .call(request)
                 .await
                 .expect("authentication middleware must not fail as a service");
 
             assert_that!(response.status())
-                .with_subject_name(format!("response in {passthrough_mode:?} mode"))
-                .is_equal_to(StatusCode::NO_CONTENT);
+                .with_subject_name(format!("{case_name}: response status"))
+                .is_equal_to(expected_status);
+            let observations = std::mem::take(
+                &mut *observations
+                    .lock()
+                    .expect("the observation lock must not be poisoned"),
+            );
+            assert_that!(observations)
+                .with_subject_name(format!("{case_name}: inner-service calls"))
+                .is_equal_to(Vec::from_iter(expected_observation));
         }
     }
 
@@ -355,6 +411,15 @@ mod tests {
                 enabled,
                 "structured missing-role hint",
             );
+            if let Some(level) = authentication_error_log_level {
+                let event = logs.event_containing("Authentication failed");
+                assert_that!(event.level())
+                    .with_subject_name("configured authentication error log level")
+                    .is_equal_to(level);
+                assert_that!(event.field("missing_role"))
+                    .with_subject_name("structured missing-role field")
+                    .is_equal_to(Some(MISSING_ROLE));
+            }
             assert_that!(contents)
                 .with_subject_name("the raw token is never logged")
                 .does_not_contain(&token);
@@ -412,23 +477,15 @@ mod tests {
                 "final authentication error details",
             );
 
-            if extraction_logging_enabled {
-                let event = contents
-                    .lines()
-                    .find(|line| line.contains("Token extractor failed."))
-                    .expect("enabled extraction-error logging must emit its event");
-                assert_that!(event)
+            if let Some(level) = token_extraction_error_log_level {
+                assert_that!(logs.event_containing("Token extractor failed.").level())
                     .with_subject_name("configured token-extraction error log level")
-                    .contains(tracing::Level::INFO.as_str());
+                    .is_equal_to(level);
             }
-            if authentication_logging_enabled {
-                let event = contents
-                    .lines()
-                    .find(|line| line.contains("Authentication failed"))
-                    .expect("enabled authentication-error logging must emit its event");
-                assert_that!(event)
+            if let Some(level) = authentication_error_log_level {
+                assert_that!(logs.event_containing("Authentication failed").level())
                     .with_subject_name("configured authentication error log level")
-                    .contains(tracing::Level::WARN.as_str());
+                    .is_equal_to(level);
             }
         }
     }

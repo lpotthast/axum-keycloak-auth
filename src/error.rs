@@ -311,9 +311,123 @@ mod tests {
         response::IntoResponse,
     };
 
-    use crate::test_support::response_text;
+    use crate::{http::RequestError, test_support::response_text};
 
     use super::AuthError;
+
+    const SENSITIVE_PROVIDER_ADDRESS: &str = "sensitive-provider.internal";
+
+    /// An error whose response describes it, rather than the generic `invalid_token` response.
+    struct DescriptiveResponseCase {
+        error: AuthError,
+        status: StatusCode,
+        challenge: Option<&'static str>,
+        body: &'static str,
+    }
+
+    fn descriptive_response_cases() -> Vec<DescriptiveResponseCase> {
+        use jsonwebtoken::errors::{Error, ErrorKind};
+
+        // RFC 6750 section 3: a request without usable credentials gets a challenge without an
+        // error code.
+        let missing_credentials = |error, body| DescriptiveResponseCase {
+            error,
+            status: StatusCode::UNAUTHORIZED,
+            challenge: Some("Bearer"),
+            body,
+        };
+        let internal_error = |error, body| DescriptiveResponseCase {
+            error,
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            challenge: None,
+            body,
+        };
+        vec![
+            missing_credentials(
+                AuthError::MissingAuthorizationHeader,
+                r#"{"error":"The 'Authorization' header was not present on a request."}"#,
+            ),
+            missing_credentials(
+                AuthError::InvalidAuthorizationHeader {
+                    reason: String::from("non-ASCII header value"),
+                },
+                r#"{"error":"The 'Authorization' header was present on a request but its value could not be parsed. Reason: non-ASCII header value"}"#,
+            ),
+            missing_credentials(
+                AuthError::MissingBearerToken,
+                r#"{"error":"The 'Authorization' header did not contain a non-blank 'Bearer <token>' value."}"#,
+            ),
+            missing_credentials(
+                AuthError::MissingQueryParams,
+                r#"{"error":"No query parameters were found on the request."}"#,
+            ),
+            missing_credentials(
+                AuthError::MissingTokenQueryParam,
+                r#"{"error":"Query parameters were found on the request, but the expected token parameter wasn't."}"#,
+            ),
+            missing_credentials(
+                AuthError::EmptyTokenQueryParam,
+                r#"{"error":"Query parameters were found on the request, and the expected token parameter was found, but it had no value assigned (\"?token=\")."}"#,
+            ),
+            missing_credentials(
+                AuthError::MissingToken,
+                r#"{"error":"No JWT could be extracted from the request."}"#,
+            ),
+            missing_credentials(
+                AuthError::NoDecodingKeys,
+                r#"{"error":"There were no decoding keys available."}"#,
+            ),
+            DescriptiveResponseCase {
+                error: AuthError::UnexpectedRole,
+                status: StatusCode::FORBIDDEN,
+                challenge: None,
+                body: r#"{"error":"An unexpected role was present."}"#,
+            },
+            internal_error(
+                AuthError::NoOidcDiscovery,
+                r#"{"error":"Never discovered an OIDC configuration."}"#,
+            ),
+            internal_error(
+                AuthError::OidcDiscovery {
+                    source: provider_request_error(),
+                },
+                r#"{"error":"Could not discover OIDC configuration."}"#,
+            ),
+            internal_error(
+                AuthError::NoJwkSetDiscovery,
+                r#"{"error":"Never discovered a JWK set."}"#,
+            ),
+            internal_error(
+                AuthError::JwkEndpoint {
+                    source: url::Url::parse(SENSITIVE_PROVIDER_ADDRESS)
+                        .expect_err("a host without a URL scheme must be rejected"),
+                },
+                r#"{"error":"Could not parse the JWK endpoint."}"#,
+            ),
+            internal_error(
+                AuthError::JwkSetDiscovery {
+                    source: provider_request_error(),
+                },
+                r#"{"error":"Could not discover the JWK set."}"#,
+            ),
+            internal_error(
+                AuthError::CreateDecodingKey {
+                    source: Error::from(ErrorKind::InvalidKeyFormat),
+                },
+                r#"{"error":"The DecodingKey, required for decoding tokens, could not be created. Source: InvalidKeyFormat"}"#,
+            ),
+        ]
+    }
+
+    fn provider_request_error() -> RequestError {
+        let source = reqwest::Client::new()
+            .get(format!("https://{SENSITIVE_PROVIDER_ADDRESS}:invalid/jwks"))
+            .build()
+            .expect_err("an invalid provider port must fail request construction");
+        RequestError::Send {
+            source: Arc::new(source),
+        }
+    }
 
     #[tokio::test]
     async fn malformed_claim_parse_errors_are_sanitized_as_invalid_token() {
@@ -348,14 +462,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_credentials_response_carries_a_bearer_challenge() {
-        let response = AuthError::MissingToken.into_response();
+    async fn descriptive_responses_have_their_documented_status_challenge_and_body() {
+        for case in descriptive_response_cases() {
+            let name = format!("{:?}", case.error);
+            let response = case.error.into_response();
 
-        assert_that!(response.status()).is_equal_to(StatusCode::UNAUTHORIZED);
-        assert_that!(response.headers().get(WWW_AUTHENTICATE).cloned())
-            .some()
-            .ascii()
-            .is_equal_to("Bearer");
+            assert_that!(response.status())
+                .with_subject_name(format!("{name}: status"))
+                .is_equal_to(case.status);
+            assert_that!(
+                response
+                    .headers()
+                    .get(WWW_AUTHENTICATE)
+                    .map(|challenge| challenge.to_str().expect("the challenge must be ASCII"))
+            )
+            .with_subject_name(format!("{name}: challenge"))
+            .is_equal_to(case.challenge);
+            assert_that!(response_text(response).await)
+                .with_subject_name(format!("{name}: body"))
+                .is_equal_to(case.body)
+                .does_not_contain(SENSITIVE_PROVIDER_ADDRESS);
+        }
     }
 
     #[tokio::test]

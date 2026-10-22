@@ -565,19 +565,21 @@ mod test {
                 futures::executor::block_on(layer.validate_raw_token(&token))
             }))
             .err();
-            let consecutive_failures = layer.instance.operational_status().consecutive_failures;
+            let status = layer.instance.operational_status();
             result_tx
-                .send((panic_payload, consecutive_failures))
+                .send((panic_payload, status))
                 .expect("the test must still be waiting for validation");
         });
 
-        let (panic_payload, consecutive_failures) = result_rx
+        let (panic_payload, status) = result_rx
             .recv_timeout(TEST_TIMEOUT)
             .expect("validation and its cancellation bookkeeping must not deadlock");
         let panic_payload =
             panic_payload.expect("validation must panic without an active Tokio runtime");
         assert_that!(panic_payload).message().contains("Tokio");
-        assert_that!(consecutive_failures).is_equal_to(1);
+        // The refresh task never ran, which is no provider failure.
+        assert_that!(status.consecutive_failures).is_equal_to(0);
+        assert_that!(status.last_error).is_none();
     }
 
     #[tokio::test]

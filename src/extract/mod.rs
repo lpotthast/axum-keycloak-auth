@@ -23,7 +23,7 @@ use std::{borrow::Cow, sync::Arc};
 use axum::extract::Request;
 use nonempty::NonEmpty;
 
-use crate::error::AuthError;
+use crate::{error::AuthError, logging::event_at_level};
 
 pub use auth_header::AuthHeaderTokenExtractor;
 pub use policy::TokenExtractionErrorPolicy;
@@ -64,13 +64,7 @@ pub trait TokenExtractor: Send + Sync + std::fmt::Debug {
 }
 
 fn log_extraction_error(level: tracing::Level, extractor: &dyn TokenExtractor, error: &AuthError) {
-    match level {
-        tracing::Level::ERROR => tracing::error!(?extractor, %error, "Token extractor failed."),
-        tracing::Level::WARN => tracing::warn!(?extractor, %error, "Token extractor failed."),
-        tracing::Level::INFO => tracing::info!(?extractor, %error, "Token extractor failed."),
-        tracing::Level::DEBUG => tracing::debug!(?extractor, %error, "Token extractor failed."),
-        tracing::Level::TRACE => tracing::trace!(?extractor, %error, "Token extractor failed."),
-    }
+    event_at_level!(level, ?extractor, %error, "Token extractor failed.");
 }
 
 /// Extract a JWT from `request` using `extractors`.
@@ -119,7 +113,13 @@ pub(crate) fn extract_jwt<'a>(
 
 #[cfg(test)]
 mod tests {
-    use std::{fmt, sync::Arc};
+    use std::{
+        fmt,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
 
     use assertr::prelude::*;
     use axum::{body::Body, extract::Request};
@@ -162,6 +162,20 @@ mod tests {
         }
     }
 
+    /// An extractor that always finds `token`, counting how often it was asked.
+    #[derive(Debug)]
+    struct CountingTokenExtractor {
+        token: &'static str,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl TokenExtractor for CountingTokenExtractor {
+        fn extract<'a>(&self, _request: &'a Request) -> Result<ExtractedToken<'a>, AuthError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(ExtractedToken::Borrowed(self.token))
+        }
+    }
+
     struct SecretLeakingTokenExtractor;
 
     impl fmt::Debug for SecretLeakingTokenExtractor {
@@ -179,6 +193,38 @@ mod tests {
                 reason: String::from(ERROR_SECRET),
             })
         }
+    }
+
+    #[test]
+    fn the_first_extracted_token_wins_and_later_extractors_are_not_asked() {
+        let first_calls = Arc::new(AtomicUsize::new(0));
+        let later_calls = Arc::new(AtomicUsize::new(0));
+        let extractors = NonEmpty::<Arc<dyn TokenExtractor>> {
+            head: Arc::new(CountingTokenExtractor {
+                token: "first",
+                calls: first_calls.clone(),
+            }),
+            tail: vec![Arc::new(CountingTokenExtractor {
+                token: "later",
+                calls: later_calls.clone(),
+            })],
+        };
+
+        assert_that!(extract_jwt(
+            &request("/", None),
+            &extractors,
+            TokenExtractionErrorPolicy::Fallback,
+            None,
+        ))
+        .ok()
+        .some()
+        .is_equal_to("first");
+        assert_that!(first_calls.load(Ordering::SeqCst))
+            .with_subject_name("first extractor calls")
+            .is_equal_to(1);
+        assert_that!(later_calls.load(Ordering::SeqCst))
+            .with_subject_name("later extractor calls")
+            .is_equal_to(0);
     }
 
     #[test]

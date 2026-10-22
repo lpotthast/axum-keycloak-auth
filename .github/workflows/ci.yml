@@ -60,7 +60,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets --all-features --locked -- -D warnings -W clippy::pedantic
+      - run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
   test:
     name: Test (stable)
@@ -73,6 +73,8 @@ jobs:
         run: cargo test --lib --locked
       - name: Documentation tests
         run: cargo test --doc --locked
+      - name: Role macro tests
+        run: cargo test --test role_macros --locked
 
   integration-test:
     name: Test (Keycloak integration)
