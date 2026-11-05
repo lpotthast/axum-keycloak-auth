@@ -35,12 +35,6 @@ target type of their arguments:
   documentation currently recommends when the validation policy defines its own audiences, so
   that advice must change with it.
 
-### Mark `AuthError` as `#[non_exhaustive]`
-
-`AuthError` is the only public error enum that is still exhaustive, so adding a variant is a
-breaking change today. `ValidationPolicyError` and the configuration enums already are
-non-exhaustive.
-
 ### Signal an absent credential source without `AuthError`
 
 `TokenExtractor::extract` reports "no credential here" through a fixed set of `AuthError` variants

@@ -15,6 +15,7 @@ use url::Url;
 /// Errors returned while retrieving an OIDC discovery document or JWKS.
 #[derive(Debug, Clone, Snafu)]
 #[snafu(module(request_error), visibility(pub(crate)))]
+#[non_exhaustive]
 pub enum RequestError {
     /// The request could not produce a successful HTTP response.
     #[snafu(display("RequestError: Request failed or returned a non-success status"))]
@@ -121,6 +122,7 @@ pub enum ValidationPolicyError {
 /// controls per-extractor error logging. Neither setting changes these responses.
 #[derive(Debug, Clone, Snafu)]
 #[snafu(visibility(pub(crate)))]
+#[non_exhaustive]
 pub enum AuthError {
     /// No OIDC discovery document is available.
     #[snafu(display("Never discovered an OIDC configuration."))]

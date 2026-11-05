@@ -10,6 +10,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - **Breaking:** `KeycloakAuthInstance::is_operational` is no longer `async`. Remove the `.await` from its calls.
+- **Breaking:** Marked `AuthError` and `RequestError` as `#[non_exhaustive]`, so future releases can add variants
+  without a breaking change. Exhaustive `match` expressions on them need a wildcard arm.
 
 ### Removed
 
