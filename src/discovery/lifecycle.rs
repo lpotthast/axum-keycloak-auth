@@ -594,12 +594,10 @@ mod tests {
     use crate::{
         clock::{Clock, SystemClock},
         discovery::default_discovery_op,
-        http::default_http_client,
-        server_url::ServerUrl,
         test_support::{
             ManualClock, MockOidcServer, RSA_KEY_A, RSA_KEY_B, TEST_REALM, TEST_TIMEOUT,
-            refresh_policy_without_jitter, static_discovered_data, test_server_url, wait_until,
-            within_test_timeout,
+            refresh_policy_without_jitter, static_discovered_data, test_http_client,
+            test_server_url, wait_until, within_test_timeout,
         },
     };
 
@@ -620,13 +618,12 @@ mod tests {
         clock: Arc<dyn Clock>,
         policy: RefreshPolicy,
     ) -> Discovery {
-        let server = ServerUrl::new(provider.server_url())
-            .expect("the mock provider URL must serve as a base URL");
+        let server = provider.server_url();
         let endpoint = OidcDiscoveryEndpoint::new(&server, provider.realm());
         let op = default_discovery_op(
-            default_http_client(),
+            test_http_client(),
             uuid::Uuid::from_u128(1),
-            provider.server_url().to_string(),
+            server.to_string(),
             provider.realm().to_owned(),
             (1, 0),
         );
@@ -674,9 +671,7 @@ mod tests {
 
     /// The discovery endpoint of the offline fixture realm, which is never contacted.
     fn fixture_endpoint() -> OidcDiscoveryEndpoint {
-        let server = ServerUrl::new(test_server_url())
-            .expect("the fixture server URL must serve as a base URL");
-        OidcDiscoveryEndpoint::new(&server, TEST_REALM)
+        OidcDiscoveryEndpoint::new(&test_server_url(), TEST_REALM)
     }
 
     fn key_a() -> jsonwebtoken::jwk::Jwk {

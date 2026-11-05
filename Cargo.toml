@@ -22,16 +22,6 @@ include = [
     "/README.md",
 ]
 
-[features]
-default = [
-    "default-tls",
-    "reqwest/charset",
-    "reqwest/http2",
-    "reqwest/macos-system-configuration",
-]
-default-tls = ["reqwest/default-tls"]
-rustls-tls = ["reqwest/rustls-tls"]
-
 [dependencies]
 axum = "0.8.1"
 futures = "0.3.31"

@@ -1,7 +1,7 @@
 //! Errors returned by instance construction, token validation, extraction, and policy
 //! construction.
 
-use std::{borrow::Cow, fmt, sync::Arc};
+use std::{borrow::Cow, sync::Arc};
 
 use axum::{
     Json,
@@ -32,36 +32,33 @@ pub enum RequestError {
     },
 }
 
-/// A Keycloak server URL that cannot serve as a base URL, such as a `mailto:` URL, so no realm URLs
-/// can be derived from it.
-#[derive(Debug, Clone)]
-pub struct InvalidServerUrlError {
-    url: Url,
-}
+/// A Keycloak server URL rejected while creating a [`ServerUrl`](crate::instance::ServerUrl).
+#[derive(Debug, Clone, PartialEq, Eq, Snafu)]
+#[snafu(module(invalid_server_url_error), visibility(pub(crate)))]
+#[non_exhaustive]
+pub enum InvalidServerUrlError {
+    /// The input is not a valid URL.
+    #[snafu(display(
+        "'{input}' cannot be used as a Keycloak server URL because it is not a valid URL \
+         ({source}). Use the server's 'http' or 'https' URL, such as 'https://keycloak.example/'."
+    ))]
+    Parse {
+        /// The rejected input.
+        input: String,
+        /// Why the input could not be parsed.
+        source: url::ParseError,
+    },
 
-impl fmt::Display for InvalidServerUrlError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "'{}' cannot be used as a Keycloak server URL because it cannot serve as a base URL. \
-             Use the server's 'http' or 'https' URL, such as 'https://keycloak.example/'.",
-            self.url
-        )
-    }
-}
-
-impl std::error::Error for InvalidServerUrlError {}
-
-impl InvalidServerUrlError {
-    pub(crate) fn new(url: Url) -> Self {
-        Self { url }
-    }
-
-    /// The rejected URL.
-    #[must_use]
-    pub fn url(&self) -> &Url {
-        &self.url
-    }
+    /// The URL cannot serve as a base URL, such as a `mailto:` URL, so no realm URLs can be
+    /// derived from it.
+    #[snafu(display(
+        "'{url}' cannot be used as a Keycloak server URL because it cannot serve as a base URL. \
+         Use the server's 'http' or 'https' URL, such as 'https://keycloak.example/'."
+    ))]
+    CannotBeABase {
+        /// The rejected URL.
+        url: Url,
+    },
 }
 
 /// Errors returned when a [`crate::validation::ValidationPolicy`] is built from inconsistent

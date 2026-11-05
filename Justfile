@@ -25,7 +25,6 @@ semver-checks:
 # Check the code.
 check:
     cargo check --all-targets --all-features
-    cargo check --all-targets --no-default-features
 
 # Lint the code.
 clippy:

@@ -1,10 +1,10 @@
 //! The fixture realm and its tokens: the realm's identity, a fixed validation time, and the claims
 //! of an access token that every built-in policy accepts at that time.
 
+use crate::instance::ServerUrl;
 use jsonwebtoken::Algorithm;
 use serde_json::{Map, Value, json};
 use time::{Date, Month, OffsetDateTime};
-use url::Url;
 
 use super::keys::KeyFixture;
 
@@ -27,8 +27,8 @@ pub(crate) const TEST_KID: &str = "key-a";
 pub(crate) type Claims = Map<String, Value>;
 
 /// [`TEST_SERVER_URL`], parsed.
-pub(crate) fn test_server_url() -> Url {
-    Url::parse(TEST_SERVER_URL).expect("the fixture server URL must parse")
+pub(crate) fn test_server_url() -> ServerUrl {
+    ServerUrl::parse(TEST_SERVER_URL).expect("the fixture server URL must be a valid server URL")
 }
 
 /// The fixed instant at which tests validate tokens. Pair it with a

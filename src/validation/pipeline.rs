@@ -359,9 +359,9 @@ mod tests {
         test_support::{
             CapturedLogs, Claims, EC_KEY_A, ManualClock, MockOidcServer, RSA_KEY_A, RSA_KEY_B,
             StaticKeySource, assert_logged_iff, claims_with, claims_without, config_for,
-            discovered_instance, keycloak_claims, legacy_policy, refresh_policy_without_jitter,
-            signed_token, strict_policy, validation_time, wait_for_discovery_completion,
-            within_test_timeout,
+            discovered_instance, instance_for, keycloak_claims, legacy_policy,
+            refresh_policy_without_jitter, signed_token, strict_policy, validation_time,
+            wait_for_discovery_completion, within_test_timeout,
         },
         token::{ProfileAndEmail, RawClaims, RawToken},
     };
@@ -626,7 +626,7 @@ mod tests {
     async fn initial_failure_has_no_stale_keys_and_is_backed_off() {
         let provider = MockOidcServer::start().await;
         provider.make_discovery_unavailable().await;
-        let instance = Arc::new(KeycloakAuthInstance::new(config_for(&provider)));
+        let instance = Arc::new(instance_for(&provider));
         wait_for_discovery_completion(&instance, 1).await;
         assert_that!(instance.is_operational()).is_false();
 

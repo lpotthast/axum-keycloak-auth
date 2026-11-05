@@ -1,18 +1,17 @@
 //! Ready-made [`KeycloakAuthInstance`]s and their discovery data: offline instances that never
 //! perform I/O, and instances discovering against the [`MockOidcServer`].
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use assertr::prelude::*;
 use jsonwebtoken::{
     Algorithm,
     jwk::{Jwk, JwkSet},
 };
-use url::Url;
 
 use crate::{
     discovery::{DiscoveredData, RefreshPolicy},
-    instance::{KeycloakAuthInstance, KeycloakConfig},
+    instance::{KeycloakAuthInstance, KeycloakConfig, ServerUrl},
     oidc::OidcConfig,
 };
 
@@ -35,11 +34,16 @@ pub(crate) fn static_discovered_data() -> DiscoveredData {
 }
 
 /// Discovery data for `realm` on `server`, trusting exactly `keys`.
-pub(crate) fn discovered_data_at(server: &Url, realm: &str, keys: Vec<Jwk>) -> DiscoveredData {
-    let issuer = server
-        .join(&format!("realms/{realm}"))
-        .expect("the static issuer URL must join");
-    let jwks_url = server.join("jwks").expect("the static JWKS URL must join");
+pub(crate) fn discovered_data_at(
+    server: &ServerUrl,
+    realm: &str,
+    keys: Vec<Jwk>,
+) -> DiscoveredData {
+    let issuer = server.realm_url(realm);
+    let jwks_url = server
+        .as_url()
+        .join("jwks")
+        .expect("the static JWKS URL must join");
     let oidc_config = serde_json::from_value::<OidcConfig>(discovery_document(&issuer, &jwks_url))
         .expect("the static discovery document must deserialize");
     DiscoveredData::new(oidc_config, &JwkSet { keys })
@@ -54,7 +58,7 @@ pub(crate) fn offline_instance() -> KeycloakAuthInstance {
 /// An instance for `realm` on `server` whose discovery already resolved, trusting [`RSA_KEY_A`]
 /// under [`TEST_KID`]. It performs no I/O, so pointing it at a [`MockOidcServer`] proves that
 /// nothing is fetched.
-pub(crate) fn offline_instance_at(server: Url, realm: &str) -> KeycloakAuthInstance {
+pub(crate) fn offline_instance_at(server: ServerUrl, realm: &str) -> KeycloakAuthInstance {
     let data = discovered_data_at(
         &server,
         realm,
@@ -65,7 +69,7 @@ pub(crate) fn offline_instance_at(server: Url, realm: &str) -> KeycloakAuthInsta
         .realm(realm.to_owned())
         .retry(TEST_RETRY)
         .build();
-    KeycloakAuthInstance::resolved_for_test(&config, data)
+    KeycloakAuthInstance::resolved(&config, data)
 }
 
 /// A configuration for `provider`'s realm, using the fast test retry strategy.
@@ -74,6 +78,25 @@ pub(crate) fn config_for(provider: &MockOidcServer) -> KeycloakConfig {
         .server(provider.server_url())
         .realm(provider.realm().to_owned())
         .retry(TEST_RETRY)
+        .build()
+}
+
+/// The HTTP client used to reach the [`MockOidcServer`], with a 10-second connect timeout and a
+/// 30-second total-request timeout.
+pub(crate) fn test_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .expect("the test HTTP client must build")
+}
+
+/// An instance discovering against `provider` with [`config_for`] and [`test_http_client`]. It
+/// starts discovery and returns immediately.
+pub(crate) fn instance_for(provider: &MockOidcServer) -> KeycloakAuthInstance {
+    KeycloakAuthInstance::builder()
+        .config(config_for(provider))
+        .http_client(test_http_client())
         .build()
 }
 
@@ -87,7 +110,7 @@ pub(crate) fn refresh_policy_without_jitter() -> RefreshPolicy {
 
 /// An instance that completed its initial discovery against `provider` and is operational.
 pub(crate) async fn discovered_instance(provider: &MockOidcServer) -> Arc<KeycloakAuthInstance> {
-    let instance = Arc::new(KeycloakAuthInstance::new(config_for(provider)));
+    let instance = Arc::new(instance_for(provider));
     wait_for_discovery_completion(&instance, 1).await;
     assert_that!(instance.is_operational()).is_true();
     instance

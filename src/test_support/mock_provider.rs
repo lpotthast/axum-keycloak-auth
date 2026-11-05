@@ -26,6 +26,8 @@ use tokio::{
 };
 use url::Url;
 
+use crate::instance::ServerUrl;
+
 use super::{TEST_REALM, wait_until};
 
 /// Blocks a mock response until released, so a test can observe requests waiting on a refresh.
@@ -73,7 +75,7 @@ impl MockResponse {
         Self {
             status: StatusCode::OK,
             headers: HeaderMap::from_iter([(
-                axum::http::header::CONTENT_TYPE,
+                http::header::CONTENT_TYPE,
                 HeaderValue::from_static("application/json"),
             )]),
             body: serde_json::to_vec(value).expect("a mock JSON response must serialize"),
@@ -156,7 +158,7 @@ async fn jwks(State(state): State<ProviderState>) -> Response {
 /// JWKS until [`MockOidcServer::set_jwks`] is called, and shuts down when dropped.
 #[derive(Debug)]
 pub(crate) struct MockOidcServer {
-    server_url: Url,
+    server_url: ServerUrl,
     realm: String,
     state: ProviderState,
     shutdown: Option<oneshot::Sender<()>>,
@@ -172,10 +174,10 @@ impl MockOidcServer {
         let address = listener
             .local_addr()
             .expect("the mock OIDC listener must have an address");
-        let server_url =
-            Url::parse(&format!("http://{address}/")).expect("the mock OIDC server URL must parse");
+        let server_url = ServerUrl::parse(&format!("http://{address}/"))
+            .expect("the mock OIDC server URL must be a valid server URL");
         let realm = String::from(TEST_REALM);
-        let issuer = issuer_url(&server_url, &realm);
+        let issuer = server_url.realm_url(&realm);
         let jwks_url = jwks_url(&server_url);
 
         let state = ProviderState {
@@ -210,7 +212,7 @@ impl MockOidcServer {
     }
 
     /// The base URL to configure as [`crate::instance::KeycloakConfig::server`].
-    pub(crate) fn server_url(&self) -> Url {
+    pub(crate) fn server_url(&self) -> ServerUrl {
         self.server_url.clone()
     }
 
@@ -221,12 +223,7 @@ impl MockOidcServer {
 
     /// The URL of the realm's discovery document.
     pub(crate) fn discovery_url(&self) -> Url {
-        self.server_url
-            .join(&format!(
-                "realms/{}/.well-known/openid-configuration",
-                self.realm
-            ))
-            .expect("the mock discovery URL must join")
+        self.server_url.discovery_url(&self.realm)
     }
 
     /// The URL of the realm's JWKS, as advertised by the discovery document.
@@ -241,7 +238,7 @@ impl MockOidcServer {
 
     /// Serves the regular discovery document again after [`Self::set_discovery_response`].
     pub(crate) async fn restore_discovery_response(&self) {
-        let issuer = issuer_url(&self.server_url, &self.realm);
+        let issuer = self.server_url.realm_url(&self.realm);
         self.set_discovery_response(MockResponse::json(&discovery_document(
             &issuer,
             &self.jwks_url(),
@@ -312,14 +309,9 @@ impl Drop for MockOidcServer {
     }
 }
 
-fn issuer_url(server_url: &Url, realm: &str) -> Url {
+fn jwks_url(server_url: &ServerUrl) -> Url {
     server_url
-        .join(&format!("realms/{realm}"))
-        .expect("the mock issuer URL must join")
-}
-
-fn jwks_url(server_url: &Url) -> Url {
-    server_url
+        .as_url()
         .join("jwks")
         .expect("the mock JWKS URL must join")
 }

@@ -28,7 +28,7 @@ restarts.
 ## Installation
 
 Add `reqwest` as well, to build the HTTP client the crate uses for OIDC discovery. It must be the same major version as
-the one this crate depends on (0.12). The default feature set uses `reqwest`'s default TLS backend:
+the one this crate depends on (0.12). Its features select the TLS backend, here `reqwest`'s default:
 
 ```toml
 [dependencies]
@@ -40,7 +40,7 @@ To use rustls instead:
 
 ```toml
 [dependencies]
-axum-keycloak-auth = { version = "0.8.4", default-features = false, features = ["rustls-tls"] }
+axum-keycloak-auth = "0.8.4"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 ```
 
@@ -52,30 +52,26 @@ token before calling protected handlers.
 See the [API documentation](https://docs.rs/axum-keycloak-auth) for strict validation, custom claims, and token
 extraction.
 
-Create one instance per realm with your own `reqwest::Client`. The crate falls back to a default client today, but a
-future release will require one:
+Create one instance per realm with your own `reqwest::Client`, which controls timeouts, proxies, and TLS:
 
 ```rust
 use std::time::Duration;
 
-use axum_keycloak_auth::{
-    Url,
-    instance::{KeycloakAuthInstance, KeycloakConfig},
-};
+use axum_keycloak_auth::instance::{KeycloakAuthInstance, KeycloakConfig, ServerUrl};
 
 pub fn keycloak_instance() -> Result<KeycloakAuthInstance, Box<dyn std::error::Error>> {
     let config = KeycloakConfig::builder()
-        .server(Url::parse("https://keycloak.example/")?)
+        .server(ServerUrl::parse("https://keycloak.example/")?)
         .realm(String::from("my-realm"))
         .build();
     let http_client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
         .build()?;
-
-    let instance = KeycloakAuthInstance::builder(config)
+    let instance = KeycloakAuthInstance::builder()
+        .config(config)
         .http_client(http_client)
-        .build()?;
+        .build();
     Ok(instance)
 }
 ```

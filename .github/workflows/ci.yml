@@ -32,25 +32,12 @@ jobs:
       - run: cargo fmt --all -- --check
 
   check:
-    name: Check (${{ matrix.name }})
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: default
-            feature_args: ""
-          - name: no default features
-            feature_args: --no-default-features
-          - name: rustls
-            feature_args: --no-default-features --features rustls-tls
-          - name: all features
-            feature_args: --all-features
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --all-targets --locked ${{ matrix.feature_args }}
+      - run: cargo check --all-targets --locked
 
   clippy:
     runs-on: ubuntu-latest

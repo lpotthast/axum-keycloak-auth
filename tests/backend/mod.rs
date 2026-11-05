@@ -5,7 +5,7 @@ use axum::{
 };
 use axum_keycloak_auth::{
     KeycloakAuthStatus, PassthroughMode,
-    instance::{KeycloakAuthInstance, KeycloakConfig},
+    instance::{KeycloakAuthInstance, KeycloakConfig, ServerUrl},
     layer::KeycloakAuthLayer,
     token::KeycloakToken,
 };
@@ -16,12 +16,20 @@ use tower_http::trace::TraceLayer;
 use url::Url;
 
 pub async fn start_axum_backend(keycloak_url: Url, realm: String) -> JoinHandle<()> {
-    let keycloak_auth_instance = Arc::new(KeycloakAuthInstance::new(
-        KeycloakConfig::builder()
-            .server(keycloak_url)
-            .realm(realm)
+    let keycloak_auth_instance = Arc::new(
+        KeycloakAuthInstance::builder()
+            .config(
+                KeycloakConfig::builder()
+                    .server(
+                        ServerUrl::new(keycloak_url)
+                            .expect("the Keycloak URL must serve as a base URL"),
+                    )
+                    .realm(realm)
+                    .build(),
+            )
+            .http_client(reqwest::Client::new())
             .build(),
-    ));
+    );
 
     let router = Router::new()
         .route("/who-am-i", get(who_am_i))

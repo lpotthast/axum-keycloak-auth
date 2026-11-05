@@ -2,24 +2,6 @@
 
 ## Next breaking release
 
-### Type `KeycloakConfig::server` as `ServerUrl`
-
-`KeycloakConfig::server` is a plain `Url`, so a URL that cannot serve as a base URL (such as a
-`mailto:` URL) is only rejected when it is used. `KeycloakAuthInstance::new` and
-`KeycloakConfig::issuer` therefore panic on it, and only `KeycloakAuthInstanceBuilder::build` can
-report it as an error. Make the crate-internal `ServerUrl` public and use it as the field type, so
-that an invalid URL is rejected once, at construction, through `ServerUrl::new` and its
-`InvalidServerUrlError`. Both panics then disappear, and `build` becomes infallible.
-
-### Require a caller-supplied HTTP client
-
-All documentation already creates instances through `KeycloakAuthInstance::builder` with an
-explicit `reqwest::Client` and announces that a future release will require it. Make the client a
-required argument of `KeycloakAuthInstance::builder`, and remove `KeycloakAuthInstance::new` and
-the crate's default client. Timeouts, proxies, and the TLS backend are then entirely the
-application's choice, so the `default-tls` and `rustls-tls` features can go away. Consider
-re-exporting `reqwest` so that applications cannot pick an incompatible major version.
-
 ### Accept `impl Into` inputs in the public builders
 
 The `KeycloakConfig` and `KeycloakAuthLayer` builders take owned types, so callers write

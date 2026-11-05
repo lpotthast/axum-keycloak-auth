@@ -7,8 +7,23 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Re-exported `reqwest`, the HTTP client library whose `Client` `KeycloakAuthInstance::builder` requires.
+
 ### Changed
 
+- **Breaking:** `KeycloakAuthInstance::builder` no longer takes the `KeycloakConfig` as an argument and now requires the
+  `reqwest::Client` used for OIDC discovery and key refreshes. Both are set through the builder, as in
+  `KeycloakAuthInstance::builder().config(config).http_client(http_client).build()`, which does not compile until both
+  are set. The crate no longer creates a default client, so timeouts, proxies, and the TLS backend are entirely the
+  application's choice.
+- **Breaking:** `KeycloakConfig::server` is now a `ServerUrl`, created with `ServerUrl::parse("https://...")`, through
+  `FromStr`, or from a parsed `Url` with `ServerUrl::new(url)`. A URL that cannot serve as a base URL is rejected there
+  with an `InvalidServerUrlError`, so `KeycloakAuthInstanceBuilder::build` no longer returns a `Result`, and
+  `KeycloakConfig::issuer` no longer panics on such a URL.
+- **Breaking:** `InvalidServerUrlError` is now a non-exhaustive enum. `CannotBeABase { url }` replaces the former
+  struct and its `url()` accessor, and `Parse { input, source }` reports input that is not a valid URL.
 - **Breaking:** `KeycloakAuthInstance::is_operational` is no longer `async`. Remove the `.await` from its calls.
 - **Breaking:** Marked `AuthError` and `RequestError` as `#[non_exhaustive]`, so future releases can add variants
   without a breaking change. Exhaustive `match` expressions on them need a wildcard arm.
@@ -22,6 +37,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   longer returned. A discovery that yields no usable keys is reported as `AuthError::NoDecodingKeys`.
 - **Breaking:** Made the `oidc` module, which contained the OIDC discovery-document models, private. No public API used
   them.
+- **Breaking:** Removed `KeycloakAuthInstance::new`. Use `KeycloakAuthInstance::builder` instead.
+- **Breaking:** Removed the `default-tls` and `rustls-tls` features and the default features, which only configured
+  `reqwest` for the removed default client. Select `reqwest` features, such as the TLS backend, through the
+  application's own `reqwest` dependency.
 
 ## [0.8.4] - 2026-11-05
 

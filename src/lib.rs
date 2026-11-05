@@ -12,8 +12,8 @@
 //!
 //! use axum::{Extension, Router, routing::get};
 //! use axum_keycloak_auth::{
-//!     PassthroughMode, Url,
-//!     instance::{KeycloakAuthInstance, KeycloakConfig},
+//!     PassthroughMode,
+//!     instance::{KeycloakAuthInstance, KeycloakConfig, ServerUrl},
 //!     layer::KeycloakAuthLayer,
 //!     token::KeycloakToken,
 //!     validation::{Algorithm, ValidationPolicy},
@@ -26,7 +26,7 @@
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let config = KeycloakConfig::builder()
-//!         .server(Url::parse("https://keycloak.example/")?)
+//!         .server(ServerUrl::parse("https://keycloak.example/")?)
 //!         .realm(String::from("my-realm"))
 //!         .build();
 //!     let policy = ValidationPolicy::strict()
@@ -37,9 +37,10 @@
 //!         .connect_timeout(Duration::from_secs(10))
 //!         .timeout(Duration::from_secs(30))
 //!         .build()?;
-//!     let instance = KeycloakAuthInstance::builder(config)
+//!     let instance = KeycloakAuthInstance::builder()
+//!         .config(config)
 //!         .http_client(http_client)
-//!         .build()?;
+//!         .build();
 //!
 //!     let app: Router = Router::new().route("/protected", get(protected)).layer(
 //!         KeycloakAuthLayer::<String>::builder()
@@ -54,9 +55,9 @@
 //! }
 //! ```
 //!
-//! Supply the `reqwest::Client` used for discovery yourself, as above. The crate falls back to a
-//! default client today, but a future release will require one. Build it with the same `reqwest`
-//! major version as this crate.
+//! The `reqwest::Client` used for discovery is yours to configure, including its timeouts, proxies,
+//! and TLS backend. Build it with the same `reqwest` major version as this crate, which also
+//! re-exports it as [`reqwest`].
 //!
 //! Apply the layer only to protected routes. Share one `KeycloakAuthInstance` across layers so
 //! they use one key cache and one refresh coordinator.
@@ -174,8 +175,15 @@ pub mod validation;
 #[cfg(test)]
 mod test_support;
 
-/// URL type used by [`instance::KeycloakConfig`].
+/// URL type wrapped by [`instance::ServerUrl`].
 pub use url::Url;
+
+/// HTTP client library whose `Client` [`instance::KeycloakAuthInstance::builder`] requires.
+///
+/// Build the client through this re-export, or depend on the same `reqwest` major version
+/// directly. A direct dependency is also how an application selects `reqwest` features, such as
+/// its TLS backend.
+pub use reqwest;
 
 /// Non-empty collection type used for configured token extractors.
 pub use nonempty::NonEmpty;

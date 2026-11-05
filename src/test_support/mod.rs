@@ -16,8 +16,8 @@
 //!   [`strict_policy`].
 //! - The middleware or layer without I/O: [`offline_layer`] or [`offline_instance`], driven by
 //!   [`bearer_request`] or [`anonymous_request`].
-//! - Discovery, refresh, and provider failures: [`MockOidcServer`] with [`config_for`] or
-//!   [`discovered_instance`].
+//! - Discovery, refresh, and provider failures: [`MockOidcServer`] with [`config_for`],
+//!   [`instance_for`], or [`discovered_instance`].
 //! - Anything time-dependent: [`ManualClock`] and [`validation_time`].
 //! - Logging behavior: [`CapturedLogs`] and [`assert_logged_iff`].
 //! - Concurrency, without hanging on a regression: [`within_test_timeout`] and [`wait_until`].
@@ -39,8 +39,9 @@ pub(crate) use claims::{
 };
 pub(crate) use clock::ManualClock;
 pub(crate) use instances::{
-    config_for, discovered_data_at, discovered_instance, offline_instance, offline_instance_at,
-    refresh_policy_without_jitter, static_discovered_data, wait_for_discovery_completion,
+    config_for, discovered_data_at, discovered_instance, instance_for, offline_instance,
+    offline_instance_at, refresh_policy_without_jitter, static_discovered_data, test_http_client,
+    wait_for_discovery_completion,
 };
 pub(crate) use key_source::StaticKeySource;
 pub(crate) use keys::{EC_KEY_A, RSA_KEY_A, RSA_KEY_B};
