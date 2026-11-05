@@ -157,10 +157,6 @@ use std::sync::Arc;
 use role::Role;
 
 mod clock;
-#[deprecated(
-    note = "Moved to `token` and `validation`. This alias module will be removed in the next breaking release."
-)]
-pub mod decode;
 mod discovery;
 pub mod error;
 pub mod extract;

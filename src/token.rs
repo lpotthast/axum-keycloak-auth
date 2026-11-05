@@ -441,14 +441,4 @@ mod tests {
             .some()
             .is_equal_to("Mapped Full Name");
     }
-
-    /// The deprecated `decode` module alias must keep exposing the public token types until the
-    /// next breaking release.
-    #[test]
-    #[allow(deprecated)]
-    fn deprecated_decode_alias_still_exposes_the_token_types() {
-        let _: Option<crate::decode::KeycloakToken<String>> = None;
-        let _: Option<crate::decode::StandardClaims<crate::decode::ProfileAndEmail>> = None;
-        let _: Option<crate::decode::RawClaims> = None;
-    }
 }

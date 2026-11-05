@@ -37,7 +37,6 @@ target type of their arguments:
 
 ### Remove compatibility leftovers
 
-- Remove the deprecated `decode` module. Its types live in `token`.
 - Remove the `oidc_discovery` module, which only re-exports `RequestError`. Export `RequestError`
   from `error` instead.
 - Remove `AuthError::NoJwkSetDiscovery` and `AuthError::CreateDecodingKey`. Nothing constructs them
