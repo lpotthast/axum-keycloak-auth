@@ -11,45 +11,51 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
-- Bearer tokens that fail decoding or validation now consistently return `401 Unauthorized` with the generic body
-  `{"error":"invalid_token"}` and a `WWW-Authenticate: Bearer error="invalid_token"` challenge. Undecodable token
-  headers previously returned `400 Bad Request`. Detailed errors remain available through `AuthError` and the optional
-  `dangerously_log_authentication_errors(level)` setting, but are no longer exposed to clients or logged by default.
-  The separate `dangerously_log_token_extraction_errors(level)` setting logs every token extractor error and the
-  extractor's `Debug` output when explicitly enabled. Typed claim parsing failures previously returned `500 Internal
-  Server Error`, exposing internal details, while fallback extraction errors previously bypassed the logging opt-in.
-- Missing-role `403 Forbidden` responses no longer expose the exact required role in debug builds and now use the same
-  generic response in every build profile. The role remains available as a structured log field when the explicit
+- Bearer tokens that fail decoding or validation now return `401 Unauthorized` with the generic body
+  `{"error":"invalid_token"}` and a `WWW-Authenticate: Bearer error="invalid_token"` challenge. Previously, undecodable
+  token headers returned `400 Bad Request`, typed claim parsing failures returned `500 Internal Server Error`. These
+  responses included detailed error text. Detailed errors remain available through `AuthError`, for example with
+  `PassthroughMode::Pass` or from `KeycloakAuthLayer::validate_raw_token`. The middleware only logs them when the new
   `dangerously_log_authentication_errors(level)` setting is enabled.
-- Unverified JWT headers are no longer logged in full by default. The optional
+- Missing-role `403 Forbidden` responses, including those produced by the role macros, no longer expose the required
+  role in debug builds and now use the same generic body in every build profile. The role remains available in
+  `AuthError::MissingExpectedRole`. For the layer's `required_roles`, it is also logged as the structured `missing_role`
+  field when `dangerously_log_authentication_errors(level)` is enabled.
+- Decoded JWT claims, which commonly contain personal data, are no longer logged at `DEBUG` level for every validated
+  token. The new `dangerously_log_raw_claims(level)` setting explicitly opts into that old behavior. It logs the claims
+  once signature and policy validation succeeded, before typed-claim and role checks, so the claims of a token that
+  ultimately fails authentication may still be logged. It must not be enabled in production.
+- Token extractor errors, together with the extractor's `Debug` output, are no longer logged at `DEBUG` level. The new
+  `dangerously_log_token_extraction_errors(level)` setting explicitly opts into that old behavior.
+- Unverified JWT headers are no longer logged in full at `DEBUG` level. The optional
   `dangerously_log_unverified_jwt_header` setting combines content and severity: omitting it disables the event,
   `UnverifiedJwtHeaderLogging::Metadata(level)` logs only `alg`, `kid`, and `typ`, and
-  `UnverifiedJwtHeaderLogging::Complete(level)` explicitly opts into the full attacker-controlled header.
-- Added regression coverage ensuring a token cannot use its header to select an incompatible verification algorithm,
-  such as treating asymmetric key material as an HMAC secret. Released versions were not affected.
+  `UnverifiedJwtHeaderLogging::Complete(level)` explicitly opts into logging the full potentially attacker-controlled
+  header.
 - Symmetric (`kty: oct`) JWKs and JWKs published for encryption (`use: enc`) are no longer used to verify token
-  signatures. A symmetric key in a published JWKS would let anyone who can read it forge tokens.
+  signatures. A symmetric key in a published JWKS would let anyone who can read it forge tokens. As in earlier
+  releases, a token cannot use its header to select an algorithm incompatible with the key, such as treating asymmetric
+  key material as an HMAC secret.
 
 ### Fixed
 
-- Tokens signed with newly rotated provider keys are now accepted after one shared JWKS refresh. Previously, an unknown
-  `kid` could cause every new token to be rejected until the service restarted. If a refreshed key verifies the
-  signature but claim validation fails, direct and passthrough diagnostics now report the claim failure instead of the
-  cached key's `InvalidSignature`.
-- OIDC discovery failures, panics, and cancellations no longer leave concurrent requests hanging. Dropping the last
-  instance owner now aborts in-flight provider discovery instead of retaining its HTTP client and connection, while a
-  shared refresh still survives cancellation of an individual validation waiter. Attempting an on-demand refresh
-  outside a Tokio runtime now panics promptly instead of deadlocking. The last successfully retrieved keys remain
-  available until a later refresh succeeds.
-- Tokens with a malformed `exp` or `iat` claim are now rejected with `401 Unauthorized`, as are tokens with a malformed
-  `nbf` claim when `nbf` validation is enabled. Previously, a non-integer `exp` caused a `500 Internal Server Error`.
-- Query-parameter tokens containing invalid UTF-8 now return `401 Unauthorized` instead of panicking.
+- Tokens signed with a newly rotated provider key are now accepted. A token whose `kid` matches no cached key triggers
+  a shared, rate-limited re-discovery of the provider's keys. Previously, keys were only re-fetched while none were
+  cached, so tokens signed with a new key were rejected until the service restarted.
+- A panicking or cancelled OIDC discovery, for example one dropped by a shutting-down Tokio runtime, no longer leaves
+  requests waiting for it hanging forever. Races between checking for an in-flight discovery and waiting for its
+  completion, which could also leave requests hanging, are fixed. Dropping the last instance owner now aborts an
+  in-flight discovery instead of letting it run on in the background.
+- `KeycloakAuthService::poll_ready` no longer panics on a failed assertion when it runs before the initial discovery
+  task has started, for example on a current-thread runtime.
+- Tokens with a fractional or out-of-range numeric `exp` claim, or a malformed `iat` claim, are now rejected with
+  `401 Unauthorized` instead of causing a `500 Internal Server Error`.
+- Query-parameter tokens containing invalid UTF-8 are now treated as unusable credentials instead of causing a panic.
 - Whitespace around Authorization-header and query-parameter tokens is now ignored, so several spaces after the
-  `Bearer ` scheme are accepted as RFC 6750 permits. Empty or whitespace-only credentials no longer block
-  lower-priority token extractors.
-  `Authorization: Bearer ` now yields `MissingBearerToken`, while `?token=` yields `EmptyTokenQueryParam`.
-- `Profile::full_name` now falls back to Keycloak's standard `name` claim when no `full_name` claim is present. Tokens
-  carrying both claims remain accepted and keep reading `full_name`.
+  `Bearer ` scheme are accepted as RFC 6750 permits. An empty or whitespace-only query-parameter token, such as
+  `?token=`, now yields `EmptyTokenQueryParam` and no longer stops lower-priority token extractors. Previously, it was
+  extracted as an empty token and rejected with `400 Bad Request`.
+- `Profile::full_name` now falls back to Keycloak's standard `name` claim when no `full_name` claim is present.
 - The `expect_role!`, `expect_roles!`, `not_expect_role!`, and `not_expect_roles!` macros now work when the crate is
   renamed in `Cargo.toml` and no longer require `axum` as a direct dependency of the calling crate.
 - Server URLs with a trailing slash after a non-root path, such as `https://host/auth/`, now produce the correct OIDC
@@ -57,61 +63,60 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Added the public `validation` module and `ValidationPolicy`. `ValidationPolicy::legacy()` preserves existing behavior,
-  while the opt-in `ValidationPolicy::strict()` enforces named issuers, matching audiences, asymmetric algorithms,
-  access-token types, and consistent `exp`, `nbf`, and `iat` checks. Policies support required claims, clock skew,
-  expiry transit margins, and `azp` constraints, and return typed `ValidationPolicyError`s for invalid configurations.
-  List settings accept any iterable, such as `.expected_audiences(["my-api"])`.
+- Added the `validation` module with `ValidationPolicy` and `ValidationPolicyBuilder`, configured through the new
+  `KeycloakAuthLayer` `validation_policy` setting. The default `ValidationPolicy::legacy()` keeps the validation of
+  earlier releases. The opt-in `ValidationPolicy::strict()` requires named issuers, a matching audience, an asymmetric
+  signature algorithm, and the `Bearer` token type, and additionally validates `nbf` and `iat`. It applies one
+  clock-skew leeway to `exp`, `nbf`, and `iat` alike, so unlike `legacy()` it accepts a token until its `exp` lies more
+  than the leeway in the past. Policies support required claims, clock skew, expiry transit margins, and `azp`
+  allowlists, and their `build` returns a typed `ValidationPolicyError` for invalid configurations. List settings accept
+  any iterable, such as `.expected_audiences(["my-api"])`.
 - Added `KeycloakConfig::issuer`, which derives a realm's token issuer (`<server>/realms/<realm>`) for
   `ValidationPolicyBuilder::expected_issuers`, handling a trailing slash on the server URL like OIDC discovery does.
 - Added `KeycloakAuthInstance::wait_for_discovery`, which waits for initial OIDC discovery and returns its error, for
   applications that must not run without Keycloak. Most applications should report readiness through
   `operational_status` instead.
-- Added `KeycloakAuthInstance::builder` to supply a custom `reqwest::Client` for timeouts, proxies, trust roots, and
-  mTLS. Its `build` reports an unusable server URL as an `InvalidServerUrlError` naming the rejected URL. Supplying a
-  client is now the documented way to create an instance, and a future release will require it.
+- Added `KeycloakAuthInstance::builder` to supply a custom `reqwest::Client` through `http_client` for timeouts,
+  proxies, trust roots, and mTLS. Its `build` reports an unusable server URL as an `InvalidServerUrlError` naming the
+  rejected URL. Supplying a client is now the documented way to create an instance, and a future release will require
+  it.
 - Added `KeycloakAuthInstance::operational_status`, returning the new `OperationalStatus` type with the latest
   `DiscoveryFailure`, for readiness and health reporting.
-- Added `TokenExtractionErrorPolicy` to control whether malformed credentials fall through to lower-priority extractors
-  (`Fallback`, the default) or reject the request (`Reject`).
-- Added the `token` module as the new home for token and claim types. The deprecated `decode` module remains as a
-  compatibility alias until the next breaking release. Rust reports the deprecation only where the module itself is
-  imported, not for paths such as `decode::KeycloakToken`, so migrate those paths proactively.
-- Added `dangerously_log_raw_claims(level)` for explicitly logging complete signature- and policy-validated raw JWT
-  claims, including personal data, at a chosen severity. Omitting it disables the event. Typed-claim or role validation
-  may still reject a request after the claims are logged, and this setting must not be enabled in production.
+- Added `TokenExtractionErrorPolicy`, configured through the new `KeycloakAuthLayer` `token_extraction_error_policy`
+  setting, to control whether a present but malformed credential falls through to lower-priority extractors
+  (`Fallback`, the default and previous behavior) or fails authentication (`Reject`).
+- Added the `token` module as the new home for token and claim types.
 
 ### Changed
 
 - Raised the minimum supported Rust version from 1.85 to 1.89. Starting with this release, an MSRV increase is no longer
   considered a breaking change, matching common practice in the Rust ecosystem.
-- Provider requests now share a connection-pooled HTTP client with default connect and request timeouts of 10 and 30
-  seconds. Non-success HTTP responses are now reported as request errors, and retried like them, instead of being
-  decoded as JSON.
-- On-demand OIDC discovery and JWKS refreshes for unverifiable tokens with unknown key IDs are now single-flight,
-  rate-limited after success, and retried with exponential backoff after failure. Requests wait at most five seconds
-  for a shared refresh, including initial discovery. The `KeycloakConfig::retry` attempts still apply within each
-  refresh. A refresh whose task is dropped before it finishes, for example by a shutting-down Tokio runtime or because
-  it was attempted outside a runtime, counts as neither a failure nor a reason to back off.
-  Refreshes remain on demand, so removed keys stay trusted until another refresh or restart.
+- Provider requests now reuse one connection-pooled HTTP client per instance instead of creating a client per request.
+  The default client has connect and request timeouts of 10 and 30 seconds, where requests previously had none.
+  Non-success HTTP responses are now reported as `RequestError::Send` instead of being decoded as JSON.
+- OIDC discovery and JWKS refreshes run on demand when no usable decoding keys are cached or when a token with an
+  unknown key ID fails verification. They are now single-flight, wait about five seconds after a success before
+  refreshing again, and back off exponentially from one second up to one minute after failures, with
+  `KeycloakConfig::retry` still applying within each refresh. Requests wait at most five seconds for a shared refresh,
+  including initial discovery. A refresh that yields no usable keys keeps the previous keys, so keys removed by the
+  provider stay trusted until a refresh returns at least one usable key, or until restart.
 - `KeycloakAuthService::poll_ready` no longer waits for initial discovery. Requests that need decoding keys wait inside
   the service call instead, bounded by the five-second refresh wait.
 - `KeycloakAuthInstance::is_operational` now reports whether at least one usable decoding key is cached. A discovery
   without usable keys is no longer operational, and a failed refresh no longer clears the operational state while the
   previous keys remain usable.
-- `401 Unauthorized` responses for missing or unusable credentials now carry a `WWW-Authenticate: Bearer` challenge.
-- Claims validation now runs once after signature verification, preserving meaningful expiry, audience, and malformed
-  token errors regardless of cached-key order. Tokens already verified by a cached key no longer trigger a pointless
-  refresh solely because their `kid` is unknown.
-- Signature failures now prefer errors from keys in the token's algorithm family, making diagnostics independent of
-  provider key order.
-- Revised the public API documentation for accuracy and consistency, added coverage for previously undocumented items,
-  and enabled the missing-documentation lint outside the standards-derived OIDC metadata models.
+- `401 Unauthorized` responses for missing or unusable credentials, and for missing decoding keys, now carry a
+  `WWW-Authenticate: Bearer` challenge.
+- Validation errors no longer depend on the order of the provider's keys: claim failures such as expiry or audience
+  mismatches are reported reliably, and signature failures prefer keys in the token's algorithm family.
+- Failed OIDC refreshes and undecodable JWKs are now logged at `WARN` instead of `ERROR`.
+- Documented the entire public API.
 - Removed the `atomic-time` and `educe` dependencies.
-- Expanded CI and `just` automation for formatting, feature combinations, Clippy, MSRV, RustSec, unit tests, and
-  integration tests, and enabled pedantic Clippy lints.
-- Updated development dependencies, including `assertr` 0.9.1, and integration tests to Keycloak 26.7.2.
-- Added the changelog and backfilled earlier releases.
+
+### Deprecated
+
+- Deprecated the `decode` module in favor of `token`. It remains as a compatibility alias until the next breaking
+  release.
 
 ## [0.8.3] - 2025-05-18
 
