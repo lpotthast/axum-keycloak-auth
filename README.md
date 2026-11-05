@@ -32,7 +32,7 @@ the one this crate depends on (0.12). Its features select the TLS backend, here 
 
 ```toml
 [dependencies]
-axum-keycloak-auth = "0.8.4"
+axum-keycloak-auth = "0.9.0"
 reqwest = "0.12"
 ```
 
@@ -40,7 +40,7 @@ To use rustls instead:
 
 ```toml
 [dependencies]
-axum-keycloak-auth = "0.8.4"
+axum-keycloak-auth = "0.9.0"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 ```
 
