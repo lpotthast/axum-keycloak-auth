@@ -50,6 +50,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `Authorization` header with another scheme, such as `Basic`, as an absent credential source instead of an unusable
   one. Such a header therefore neither fails authentication nor counts as a second credential source.
 
+Dependency changes:
+
+- **Breaking:** Updated `reqwest` from 0.12 to 0.13. The `reqwest::Client` passed to `KeycloakAuthInstance::builder`
+  must now be built with `reqwest` 0.13, so update your application's own `reqwest` dependency too. Its default TLS
+  backend is now rustls instead of native TLS, and its `rustls-tls` feature is now called `rustls`. Enable `reqwest`'s
+  `native-tls` feature to keep native TLS.
+
 ### Removed
 
 - **Breaking:** Removed the `decode` module, deprecated since 0.8.4. Import its types from `token` instead, for example

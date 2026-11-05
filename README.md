@@ -28,21 +28,17 @@ restarts.
 ## Installation
 
 Add `reqwest` as well, to build the HTTP client the crate uses for OIDC discovery. It must be the same major version as
-the one this crate depends on (0.12). Its features select the TLS backend, here `reqwest`'s default:
+the one this crate depends on (0.13):
 
 ```toml
 [dependencies]
 axum-keycloak-auth = "0.9.0"
-reqwest = "0.12"
+reqwest = "0.13"
 ```
 
-To use rustls instead:
-
-```toml
-[dependencies]
-axum-keycloak-auth = "0.9.0"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
-```
+This crate enables no `reqwest` TLS features itself. Choose the
+[`reqwest` features](https://docs.rs/reqwest/0.13/reqwest/#optional-features) your application needs, in particular
+the TLS backend. The defaults use rustls.
 
 ## Usage
 
