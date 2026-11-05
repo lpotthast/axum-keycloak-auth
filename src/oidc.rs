@@ -114,6 +114,8 @@ pub struct OpenIDConnectRPInitiatedLogoutClaims {
 
 /// See: `https://openid.net/specs/oauth-v2-jarm.html#name-authorization-server-metada`
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+// These field names match the standardized discovery claim names.
+#[allow(clippy::struct_field_names)]
 pub struct OpenIDConnectJARMDiscoveryClaims {
     /// OPTIONAL. A JSON array containing a list of the JWS (RFC7515) signing algorithms (alg values) supported by the authorization endpoint to sign the response.
     pub authorization_signing_alg_values_supported: Option<Vec<String>>,

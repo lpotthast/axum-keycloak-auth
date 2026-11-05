@@ -35,11 +35,6 @@ target type of their arguments:
   documentation currently recommends when the validation policy defines its own audiences, so
   that advice must change with it.
 
-### Remove compatibility leftovers
-
-- Make the `oidc` module private. No public API uses its discovery-document models, and they are
-  exempt from the missing-documentation lint.
-
 ### Mark `AuthError` as `#[non_exhaustive]`
 
 `AuthError` is the only public error enum that is still exhaustive, so adding a variant is a

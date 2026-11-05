@@ -14,6 +14,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Breaking:** Removed the `oidc_discovery` module. Import `RequestError` from `error` instead.
 - **Breaking:** Removed the `AuthError::NoJwkSetDiscovery` and `AuthError::CreateDecodingKey` variants, which were no
   longer returned. A discovery that yields no usable keys is reported as `AuthError::NoDecodingKeys`.
+- **Breaking:** Made the `oidc` module, which contained the OIDC discovery-document models, private. No public API used
+  them.
 
 ## [0.8.4] - 2026-11-05
 
