@@ -92,10 +92,9 @@
 //! multiple or custom [`TokenExtractor`](extract::TokenExtractor) implementations. Extractors run
 //! in order, and the first token found is validated. An absent credential source always falls
 //! through. The default
-//! [`TokenExtractionErrorPolicy::Fallback`](extract::TokenExtractionErrorPolicy::Fallback) also
-//! ignores unusable sources for compatibility, while
 //! [`TokenExtractionErrorPolicy::Reject`](extract::TokenExtractionErrorPolicy::Reject) rejects the
-//! first unusable source.
+//! first unusable source, such as a blank `Bearer` token, because RFC 6750 forbids clients to send
+//! a token by more than one method.
 //!
 //! [`QueryParamTokenExtractor`](extract::QueryParamTokenExtractor) reads tokens from URLs, where
 //! they can leak through browser history, referrer headers, and request logs.

@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use axum::extract::Request;
 use http::header::ToStrError;
-use snafu::{OptionExt, ResultExt, Snafu, ensure};
+use snafu::{ResultExt, Snafu, ensure};
 
 use super::{BoxError, ExtractedToken, TokenExtractor};
 
@@ -19,10 +19,6 @@ pub enum AuthHeaderExtractError {
         source: ToStrError,
     },
 
-    /// The header did not use the `Bearer` scheme.
-    #[snafu(display("The 'Authorization' header did not use the 'Bearer' scheme."))]
-    MissingBearerScheme,
-
     /// The header used the `Bearer` scheme, but the token after it was empty or consisted only of
     /// whitespace.
     #[snafu(display("The 'Authorization' header carried a blank 'Bearer' token."))]
@@ -31,25 +27,34 @@ pub enum AuthHeaderExtractError {
 
 /// Extracts a token from an `Authorization: Bearer <token>` header.
 ///
-/// The `Bearer ` prefix is case-sensitive. Whitespace around the token is ignored. A missing header
-/// is an absent source. Any other header that does not carry a non-blank bearer token is rejected
-/// with an [`AuthHeaderExtractError`].
+/// The `Bearer` scheme is matched case-insensitively, as RFC 7235 requires. Whitespace around the
+/// token is ignored. A missing header, or one using another scheme such as `Basic`, is an absent
+/// source. A `Bearer` header that does not carry a non-blank token is rejected with an
+/// [`AuthHeaderExtractError`].
 #[derive(Debug, Clone, Default)]
 pub struct AuthHeaderTokenExtractor {}
 
 impl TokenExtractor for AuthHeaderTokenExtractor {
     fn extract<'a>(&self, request: &'a Request) -> Result<Option<ExtractedToken<'a>>, BoxError> {
-        let Some(header) = request.headers().get(http::header::AUTHORIZATION) else {
+        let Some(header_value) = request.headers().get(http::header::AUTHORIZATION) else {
             return Ok(None);
         };
 
-        let token = header
-            .to_str()
-            .context(InvalidHeaderValueSnafu)?
-            .strip_prefix("Bearer ")
-            .context(MissingBearerSchemeSnafu)?
-            // The scheme may be followed by several spaces, and a JWT never contains whitespace.
-            .trim();
+        // The scheme ends at the first space. Determine it from the raw bytes, so that a header for
+        // another scheme is skipped even if it is not visible ASCII.
+        let bytes = header_value.as_bytes();
+        let scheme_len = bytes
+            .iter()
+            .position(|byte| *byte == b' ')
+            .unwrap_or(bytes.len());
+        if !bytes[..scheme_len].eq_ignore_ascii_case(b"Bearer") {
+            return Ok(None);
+        }
+
+        // Bearer tokens are visible ASCII (RFC 6750). Slicing at `scheme_len` is safe because the
+        // scheme matched the ASCII `Bearer`. The scheme may be followed by several spaces, and a
+        // JWT never contains whitespace.
+        let token = header_value.to_str().context(InvalidHeaderValueSnafu)?[scheme_len..].trim();
 
         // A blank value can never be a JWT, and reporting it as an extracted token would stop
         // extraction and shadow a valid token in a lower-priority source.
@@ -131,23 +136,57 @@ mod tests {
     }
 
     #[test]
-    fn other_schemes_yield_an_error() {
-        // The scheme comparison is case-sensitive.
-        for authorization in ["Basic abc.def.ghi", "bearer abc.def.ghi"] {
+    fn the_scheme_is_matched_case_insensitively() {
+        for authorization in [
+            "bearer abc.def.ghi",
+            "BEARER abc.def.ghi",
+            "bEaReR abc.def.ghi",
+        ] {
             assert_that!(extract(&request_with_authorization(authorization)))
                 .with_subject_name(format!("{authorization:?}"))
-                .is_matching(pattern!(Err(AuthHeaderExtractError::MissingBearerScheme)));
+                .ok()
+                .some()
+                .is_equal_to("abc.def.ghi");
         }
     }
 
     #[test]
-    fn a_header_value_that_is_not_visible_ascii_yields_an_error() {
-        let request = request_with_authorization(
-            HeaderValue::from_bytes(&[0xff]).expect("test header value must build"),
-        );
+    fn other_schemes_are_an_absent_source() {
+        for authorization in [
+            "Basic dXNlcjpwYXNz",
+            "DPoP abc.def.ghi",
+            "Bearerabc.def.ghi",
+            "Basic \u{e4}",
+        ] {
+            assert_that!(extract(&request_with_authorization(
+                HeaderValue::from_bytes(authorization.as_bytes())
+                    .expect("test header value must build")
+            )))
+            .with_subject_name(format!("{authorization:?}"))
+            .ok()
+            .is_none();
+        }
+    }
 
-        assert_that!(extract(&request)).is_matching(pattern!(Err(
-            AuthHeaderExtractError::InvalidHeaderValue { .. }
-        )));
+    #[test]
+    fn a_bearer_scheme_without_a_token_yields_an_error() {
+        assert_that!(extract(&request_with_authorization("Bearer")))
+            .is_matching(pattern!(Err(AuthHeaderExtractError::EmptyBearerToken)));
+    }
+
+    #[test]
+    fn a_bearer_header_value_that_is_not_visible_ascii_yields_an_error() {
+        // Invalid UTF-8, and valid UTF-8 that is still no bearer token, which is ASCII-only.
+        for value in [&b"Bearer \xff"[..], "Bearer t\u{f6}k\u{e9}n".as_bytes()] {
+            let request = request_with_authorization(
+                HeaderValue::from_bytes(value).expect("test header value must build"),
+            );
+
+            assert_that!(extract(&request))
+                .with_subject_name(format!("{value:?}"))
+                .is_matching(pattern!(Err(
+                    AuthHeaderExtractError::InvalidHeaderValue { .. }
+                )));
+        }
     }
 }

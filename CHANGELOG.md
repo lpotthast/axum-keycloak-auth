@@ -30,8 +30,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Breaking:** `TokenExtractor::extract` now returns `Result<Option<ExtractedToken>, extract::BoxError>`. An extractor
   reports an absent credential source as `Ok(None)`, and a present but unusable one as an error of any type, which `?`
   converts. A custom extractor that still returns an error such as `AuthError::MissingToken` for an absent source
-  therefore rejects the request under `TokenExtractionErrorPolicy::Reject`. `dangerously_log_token_extraction_errors`
-  no longer logs absent sources.
+  therefore rejects the request under the new default `TokenExtractionErrorPolicy::Reject`.
+  `dangerously_log_token_extraction_errors` no longer logs absent sources.
+- **Breaking:** `TokenExtractionErrorPolicy::Reject` is now the default, because RFC 6750 forbids clients to send a
+  token by more than one method in a request. A request whose higher-priority credential source is present but
+  unusable, such as a blank `Authorization: Bearer` header next to a valid query token, is now rejected instead of being
+  authenticated with the lower-priority token. The former default `Fallback` is renamed to `Fallthrough` and remains
+  available as an opt-out.
+- `AuthHeaderTokenExtractor` now matches the `Bearer` scheme case-insensitively, as RFC 7235 requires, and treats an
+  `Authorization` header with another scheme, such as `Basic`, as an absent credential source instead of an unusable
+  one. Such a header therefore neither rejects the request nor shadows a lower-priority token.
 - **Breaking:** `TokenExtractionErrorPolicy::Reject` now reports an unusable credential as `AuthError::TokenExtraction`,
   whose source is the extractor's error, such as the new public `AuthHeaderExtractError` and `QueryParamExtractError`
   of the built-in extractors. The response is still `401 Unauthorized` with a `WWW-Authenticate: Bearer` challenge, but

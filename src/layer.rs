@@ -129,8 +129,8 @@ where
     /// Severity for logging every error returned by a configured token extractor.
     ///
     /// These events are independent of the final authentication outcome. They include errors
-    /// ignored by [`TokenExtractionErrorPolicy::Fallback`], even if a later extractor succeeds and
-    /// the request is authenticated. An absent credential source is not an error and is not
+    /// ignored by [`TokenExtractionErrorPolicy::Fallthrough`], even if a later extractor succeeds
+    /// and the request is authenticated. An absent credential source is not an error and is not
     /// logged.
     ///
     /// # Security warning
@@ -178,12 +178,11 @@ where
     #[builder(default = NonEmpty::new(Arc::new(AuthHeaderTokenExtractor::default()) as _))]
     pub token_extractors: NonEmpty<Arc<dyn TokenExtractor>>,
 
-    /// Controls whether an unusable credential source falls back to the next configured extractor
-    /// or rejects authentication immediately. An absent source always falls through.
+    /// Controls whether an unusable credential source rejects authentication or falls through to
+    /// the next configured extractor. An absent source always falls through.
     ///
-    /// Defaults to [`TokenExtractionErrorPolicy::Fallback`] to preserve earlier behavior.
-    /// [`TokenExtractionErrorPolicy::Reject`] prevents a malformed higher-priority source from
-    /// falling through to a lower-priority credential.
+    /// Defaults to [`TokenExtractionErrorPolicy::Reject`], which prevents a malformed
+    /// higher-priority source from falling through to a lower-priority credential.
     #[builder(default)]
     pub token_extraction_error_policy: TokenExtractionErrorPolicy,
 
@@ -373,7 +372,7 @@ mod test {
             dangerously_log_unverified_jwt_header: IsNone,
             dangerously_log_authentication_errors: IsNone,
             dangerously_log_token_extraction_errors: IsNone,
-            token_extraction_error_policy: eq(TokenExtractionErrorPolicy::Fallback),
+            token_extraction_error_policy: eq(TokenExtractionErrorPolicy::Reject),
             ..
         }));
         assert_that!(provider.discovery_requests()).is_equal_to(0);

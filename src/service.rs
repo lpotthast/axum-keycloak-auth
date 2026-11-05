@@ -450,14 +450,15 @@ mod tests {
             (Some(tracing::Level::INFO), Some(tracing::Level::WARN)),
         ] {
             let mut layer = offline_layer();
+            layer.token_extraction_error_policy = TokenExtractionErrorPolicy::Fallthrough;
             layer.dangerously_log_token_extraction_errors = token_extraction_error_log_level;
             layer.dangerously_log_authentication_errors = authentication_error_log_level;
             let mut service = KeycloakAuthService::new(tower::service_fn(no_content), &layer);
 
-            // The malformed header is an extractor error. The default fallback policy ignores it,
-            // so authentication finally fails because no token was extracted.
+            // The blank token is an extractor error. The fallthrough policy ignores it, so
+            // authentication finally fails because no token was extracted.
             let request = Request::builder()
-                .header(AUTHORIZATION, "Basic credentials")
+                .header(AUTHORIZATION, "Bearer ")
                 .body(Body::empty())
                 .expect("the test request must build");
             let logs = CapturedLogs::default();
@@ -481,7 +482,7 @@ mod tests {
             );
             assert_logged_iff(
                 &contents,
-                "The 'Authorization' header did not use the 'Bearer' scheme.",
+                "The 'Authorization' header carried a blank 'Bearer' token.",
                 extraction_logging_enabled,
                 "per-extractor error details",
             );
@@ -512,17 +513,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_rejected_credential_gets_a_generic_response_and_logs_its_cause_only_on_opt_in() {
-        const CAUSE: &str = "The 'Authorization' header did not use the 'Bearer' scheme.";
+    async fn by_default_a_rejected_credential_gets_a_generic_response_and_logs_its_cause_on_opt_in()
+    {
+        const CAUSE: &str = "The 'Authorization' header carried a blank 'Bearer' token.";
 
         for authentication_error_log_level in [None, Some(tracing::Level::WARN)] {
             let mut layer = offline_layer();
-            layer.token_extraction_error_policy = TokenExtractionErrorPolicy::Reject;
             layer.dangerously_log_authentication_errors = authentication_error_log_level;
             let mut service = KeycloakAuthService::new(tower::service_fn(no_content), &layer);
 
             let request = Request::builder()
-                .header(AUTHORIZATION, "Basic credentials")
+                .header(AUTHORIZATION, "Bearer ")
                 .body(Body::empty())
                 .expect("the test request must build");
             let logs = CapturedLogs::default();

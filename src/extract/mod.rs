@@ -10,8 +10,8 @@
 //!
 //! The built-in extractors treat a blank token value, meaning one that is empty or consists only of
 //! whitespace, as an unusable source rather than as an extracted token. `Authorization: Bearer `
-//! and `?token=` are therefore errors, and extraction still continues past them under
-//! [`TokenExtractionErrorPolicy::Fallback`]. Custom extractors should likewise return an error
+//! and `?token=` are therefore errors, which reject authentication under the default
+//! [`TokenExtractionErrorPolicy::Reject`]. Custom extractors should likewise return an error
 //! instead of a blank token, because any returned token ends extraction.
 
 mod auth_header;
@@ -75,10 +75,10 @@ fn log_extraction_error(level: tracing::Level, extractor: &dyn TokenExtractor, e
 /// When `token_extraction_error_log_level` is set, every extractor error is logged at that level,
 /// including the extractor's [`Debug`](std::fmt::Debug) output and the detailed error. `None`
 /// disables these events. An error means that the current source was present but malformed. The
-/// default [`TokenExtractionErrorPolicy::Fallback`] policy tries the next extractor.
-/// [`TokenExtractionErrorPolicy::Reject`] propagates the first error instead, preventing a request
-/// containing, for example, a malformed `Authorization` header and a valid query token from
-/// authenticating with the query token.
+/// default [`TokenExtractionErrorPolicy::Reject`] returns the first error as
+/// [`AuthError::TokenExtraction`], preventing a request containing, for example, a malformed
+/// `Authorization` header and a valid query token from authenticating with the query token.
+/// [`TokenExtractionErrorPolicy::Fallthrough`] tries the next extractor instead.
 pub(crate) fn extract_jwt<'a>(
     request: &'a Request<axum::body::Body>,
     extractors: &NonEmpty<Arc<dyn TokenExtractor>>,
@@ -97,7 +97,7 @@ pub(crate) fn extract_jwt<'a>(
                 // Matched exhaustively on purpose: a future policy variant must be decided here
                 // rather than silently defaulting to one of the existing behaviors.
                 match error_policy {
-                    TokenExtractionErrorPolicy::Fallback => {}
+                    TokenExtractionErrorPolicy::Fallthrough => {}
                     TokenExtractionErrorPolicy::Reject => {
                         return Err(AuthError::TokenExtraction {
                             source: Arc::from(error),
@@ -218,7 +218,7 @@ mod tests {
         assert_that!(extract_jwt(
             &request("/", None),
             &extractors,
-            TokenExtractionErrorPolicy::Fallback,
+            TokenExtractionErrorPolicy::default(),
             None,
         ))
         .ok()
@@ -244,8 +244,8 @@ mod tests {
         };
 
         for policy in [
-            TokenExtractionErrorPolicy::Fallback,
             TokenExtractionErrorPolicy::Reject,
+            TokenExtractionErrorPolicy::Fallthrough,
         ] {
             assert_that!(extract_jwt(&request, &extractors, policy, None))
                 .ok()
@@ -255,13 +255,28 @@ mod tests {
     }
 
     #[test]
-    fn fallback_policy_continues_after_a_malformed_credential_source() {
-        let request = request("/?token=abc.def.ghi", Some("Basic credentials"));
+    fn another_authorization_scheme_does_not_shadow_a_query_token_under_both_policies() {
+        let request = request("/?token=abc.def.ghi", Some("Basic dXNlcjpwYXNz"));
+
+        for policy in [
+            TokenExtractionErrorPolicy::Reject,
+            TokenExtractionErrorPolicy::Fallthrough,
+        ] {
+            assert_that!(extract_jwt(&request, &header_then_query(), policy, None))
+                .ok()
+                .some()
+                .is_equal_to("abc.def.ghi");
+        }
+    }
+
+    #[test]
+    fn fallthrough_policy_continues_after_a_blank_bearer_token() {
+        let request = request("/?token=abc.def.ghi", Some("Bearer "));
 
         assert_that!(extract_jwt(
             &request,
             &header_then_query(),
-            TokenExtractionErrorPolicy::Fallback,
+            TokenExtractionErrorPolicy::Fallthrough,
             None,
         ))
         .ok()
@@ -270,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn fallback_logging_does_not_expose_custom_extractor_or_error_details_by_default() {
+    fn fallthrough_logging_does_not_expose_custom_extractor_or_error_details_by_default() {
         let request = request("/?token=abc.def.ghi", None);
         let extractors = NonEmpty::<Arc<dyn TokenExtractor>> {
             head: Arc::new(SecretLeakingTokenExtractor),
@@ -282,7 +297,7 @@ mod tests {
             extract_jwt(
                 &request,
                 &extractors,
-                TokenExtractionErrorPolicy::Fallback,
+                TokenExtractionErrorPolicy::Fallthrough,
                 None,
             )
         };
@@ -298,7 +313,7 @@ mod tests {
 
     #[test]
     fn enabled_extraction_error_logging_records_every_extractor_error_but_no_absent_source() {
-        let request = request("/?token=abc.def.ghi", Some("Basic credentials"));
+        let request = request("/?token=abc.def.ghi", Some("Bearer "));
         let extractors = NonEmpty::<Arc<dyn TokenExtractor>> {
             head: Arc::new(SecretLeakingTokenExtractor),
             tail: vec![
@@ -313,7 +328,7 @@ mod tests {
             extract_jwt(
                 &request,
                 &extractors,
-                TokenExtractionErrorPolicy::Fallback,
+                TokenExtractionErrorPolicy::Fallthrough,
                 Some(tracing::Level::INFO),
             )
         };
@@ -333,23 +348,8 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_token_value_does_not_shadow_a_lower_priority_source() {
-        let request = request("/?token=abc.def.ghi", Some("Bearer "));
-
-        assert_that!(extract_jwt(
-            &request,
-            &header_then_query(),
-            TokenExtractionErrorPolicy::Fallback,
-            None,
-        ))
-        .ok()
-        .some()
-        .is_equal_to("abc.def.ghi");
-    }
-
-    #[test]
     fn reject_policy_stops_at_a_malformed_credential_source_and_keeps_its_error() {
-        let request = request("/?token=abc.def.ghi", Some("Basic credentials"));
+        let request = request("/?token=abc.def.ghi", Some("Bearer "));
 
         let error = extract_jwt(
             &request,
@@ -365,7 +365,7 @@ mod tests {
         assert!(
             matches!(
                 source.downcast_ref::<AuthHeaderExtractError>(),
-                Some(AuthHeaderExtractError::MissingBearerScheme)
+                Some(AuthHeaderExtractError::EmptyBearerToken)
             ),
             "expected the header extractor's error, got {source:?}"
         );
@@ -376,8 +376,8 @@ mod tests {
         let request = request("/", None);
 
         for policy in [
-            TokenExtractionErrorPolicy::Fallback,
             TokenExtractionErrorPolicy::Reject,
+            TokenExtractionErrorPolicy::Fallthrough,
         ] {
             assert_that!(extract_jwt(&request, &header_then_query(), policy, None,))
                 .ok()
