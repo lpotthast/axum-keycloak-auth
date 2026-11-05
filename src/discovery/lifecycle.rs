@@ -182,13 +182,13 @@ impl RefreshState {
             RefreshError::Discovery(_) | RefreshError::NoUsableDecodingKeys => {
                 tracing::warn!(
                     error = %error.message(),
-                    "OIDC refresh failed; keeping the previous cache state."
+                    "OIDC refresh failed. The previous cache state is kept."
                 );
             }
             RefreshError::Panicked => {
                 tracing::error!(
                     error = %error.message(),
-                    "OIDC refresh panicked; keeping the previous cache state."
+                    "OIDC refresh panicked. The previous cache state is kept."
                 );
             }
         }
@@ -278,7 +278,7 @@ impl DispatchGuard {
             // this says anything about the provider. Neither record a failure nor back off, so
             // that a later runtime may retry immediately.
             DispatchOutcome::Cancelled => {
-                tracing::debug!("OIDC refresh was cancelled; keeping the previous cache state.");
+                tracing::debug!("OIDC refresh was cancelled. The previous cache state is kept.");
                 current_data
             }
         };
@@ -440,7 +440,7 @@ impl Discovery {
             .is_err()
         {
             tracing::warn!(
-                "Timed out waiting for a shared OIDC discovery refresh; continuing with the current key set."
+                "Timed out waiting for a shared OIDC discovery refresh. Validation continues with the current key set."
             );
         }
         self.published.borrow().0 > observed_generation
