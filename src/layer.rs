@@ -11,7 +11,7 @@ use typed_builder::TypedBuilder;
 
 use crate::clock::{Clock, SystemClock};
 use crate::error::AuthError;
-use crate::extract::{AuthHeaderTokenExtractor, TokenExtractionErrorPolicy, TokenExtractor};
+use crate::extract::{AuthHeaderTokenExtractor, TokenExtractor};
 use crate::token::{KeycloakToken, ProfileAndEmail};
 use crate::validation::{ValidationPolicy, Validator};
 use crate::{instance::KeycloakAuthInstance, role::Role, service::KeycloakAuthService};
@@ -128,10 +128,9 @@ where
 
     /// Severity for logging every error returned by a configured token extractor.
     ///
-    /// These events are independent of the final authentication outcome. They include errors
-    /// ignored by [`TokenExtractionErrorPolicy::Fallthrough`], even if a later extractor succeeds
-    /// and the request is authenticated. An absent credential source is not an error and is not
-    /// logged.
+    /// These events are independent of the final authentication error, which does not include the
+    /// extractor's error if another credential source was also present. An absent credential source
+    /// is not an error and is not logged.
     ///
     /// # Security warning
     ///
@@ -140,7 +139,7 @@ where
     /// Errors can also occur at high volume during ordinary requests. Keep this disabled unless
     /// those diagnostics are required and the log sink is appropriately protected.
     ///
-    /// This setting affects logs only. It does not change extraction policy or the HTTP response.
+    /// This setting affects logs only. It does not change extraction or the HTTP response.
     /// `None` disables token-extraction error logging, which is the default. Supplying a level
     /// enables it.
     #[builder(default, setter(strip_option))]
@@ -173,18 +172,10 @@ where
 
     /// Ordered, non-empty set of token extractors.
     ///
-    /// The first extracted token is validated. Defaults to one
-    /// [`AuthHeaderTokenExtractor`].
+    /// Defaults to one [`AuthHeaderTokenExtractor`]. See [`crate::extract`] for how their results
+    /// decide which token is validated.
     #[builder(default = NonEmpty::new(Arc::new(AuthHeaderTokenExtractor::default()) as _))]
     pub token_extractors: NonEmpty<Arc<dyn TokenExtractor>>,
-
-    /// Controls whether an unusable credential source rejects authentication or falls through to
-    /// the next configured extractor. An absent source always falls through.
-    ///
-    /// Defaults to [`TokenExtractionErrorPolicy::Reject`], which prevents a malformed
-    /// higher-priority source from falling through to a lower-priority credential.
-    #[builder(default)]
-    pub token_extraction_error_policy: TokenExtractionErrorPolicy,
 
     #[builder(default = uuid::Uuid::now_v7(), setter(skip))]
     id: uuid::Uuid,
@@ -344,10 +335,7 @@ mod test {
     use crate::{
         PassthroughMode,
         error::AuthError,
-        extract::{
-            AuthHeaderTokenExtractor, QueryParamTokenExtractor, TokenExtractionErrorPolicy,
-            TokenExtractor,
-        },
+        extract::{AuthHeaderTokenExtractor, QueryParamTokenExtractor, TokenExtractor},
         layer::{KeycloakAuthLayer, UnverifiedJwtHeaderLogging},
         test_support::{
             ManualClock, MockOidcServer, RSA_KEY_A, RSA_KEY_B, TEST_AUDIENCE, TEST_ISSUER,
@@ -372,7 +360,6 @@ mod test {
             dangerously_log_unverified_jwt_header: IsNone,
             dangerously_log_authentication_errors: IsNone,
             dangerously_log_token_extraction_errors: IsNone,
-            token_extraction_error_policy: eq(TokenExtractionErrorPolicy::Reject),
             ..
         }));
         assert_that!(provider.discovery_requests()).is_equal_to(0);
@@ -396,7 +383,6 @@ mod test {
             .dangerously_log_token_extraction_errors(tracing::Level::DEBUG)
             .expected_audiences(vec![String::from(TEST_AUDIENCE)])
             .required_roles(vec![String::from("administrator")])
-            .token_extraction_error_policy(TokenExtractionErrorPolicy::Reject)
             .token_extractors(NonEmpty::<Arc<dyn TokenExtractor>> {
                 head: Arc::new(AuthHeaderTokenExtractor::default()),
                 tail: vec![
@@ -407,7 +393,6 @@ mod test {
             .build();
 
         assert_that!(layer).matches(partial!(KeycloakAuthLayer {
-            token_extraction_error_policy: eq(TokenExtractionErrorPolicy::Reject),
             dangerously_log_raw_claims: eq(Some(tracing::Level::INFO)),
             dangerously_log_unverified_jwt_header: eq(Some(UnverifiedJwtHeaderLogging::Complete(
                 tracing::Level::TRACE

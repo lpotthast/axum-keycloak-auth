@@ -75,8 +75,8 @@ impl TokenExtractor for QueryParamTokenExtractor {
         first_token.truncate(first_token.trim_end().len());
         first_token.drain(..first_token.len() - first_token.trim_start().len());
 
-        // A blank value can never be a JWT, and reporting it as an extracted token would stop
-        // extraction and shadow a valid token in a lower-priority source.
+        // A blank value can never be a JWT. Report the source as unusable rather than passing an
+        // empty token on to validation.
         ensure!(!first_token.is_empty(), EmptyTokenSnafu);
 
         Ok(Some(ExtractedToken::Owned(first_token)))

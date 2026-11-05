@@ -4,18 +4,23 @@
 //! [`AuthHeaderTokenExtractor`] reads the `Authorization: Bearer <token>` header, and
 //! [`QueryParamTokenExtractor`] reads a configurable query parameter.
 //!
-//! A layer may use several extractors. They run in order until one returns a token. An absent
-//! credential source always continues to the next extractor. [`TokenExtractionErrorPolicy`]
-//! controls whether a present but unusable source continues or rejects authentication.
+//! A layer may use several extractors, and each one is asked for its credential source. RFC 6750
+//! forbids clients to send a token by more than one method in a request. The outcome therefore
+//! depends on how many sources are present:
+//!
+//! - None: authentication fails with [`AuthError::MissingToken`].
+//! - One, carrying a token: that token is validated.
+//! - One, but unusable: authentication fails with [`AuthError::TokenExtraction`].
+//! - More than one, usable or not: authentication fails with
+//!   [`AuthError::MultipleCredentialSources`]. A malformed `Authorization` header next to a valid
+//!   query token is therefore rejected rather than authenticated with the query token.
 //!
 //! The built-in extractors treat a blank token value, meaning one that is empty or consists only of
-//! whitespace, as an unusable source rather than as an extracted token. `Authorization: Bearer `
-//! and `?token=` are therefore errors, which reject authentication under the default
-//! [`TokenExtractionErrorPolicy::Reject`]. Custom extractors should likewise return an error
-//! instead of a blank token, because any returned token ends extraction.
+//! whitespace, as an unusable source rather than as an absent one. `Authorization: Bearer ` and
+//! `?token=` are therefore errors. Custom extractors should likewise return an error instead of a
+//! blank token.
 
 mod auth_header;
-mod policy;
 mod query_param;
 
 use std::{borrow::Cow, sync::Arc};
@@ -26,7 +31,6 @@ use nonempty::NonEmpty;
 use crate::{error::AuthError, logging::event_at_level};
 
 pub use auth_header::{AuthHeaderExtractError, AuthHeaderTokenExtractor};
-pub use policy::TokenExtractionErrorPolicy;
 pub use query_param::{QueryParamExtractError, QueryParamTokenExtractor};
 
 /// An unprocessed compact JWT extracted from a request.
@@ -43,15 +47,15 @@ pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 pub trait TokenExtractor: Send + Sync + std::fmt::Debug {
     /// Extracts a token from the request.
     ///
-    /// Returns `Ok(Some(token))` if the credential source carries a valid token, and `Ok(None)` if
-    /// the token is absent, which lets extraction continue with the next extractor.
+    /// Returns `Ok(Some(token))` if the credential source carries a token, and `Ok(None)` only if
+    /// the source is absent. Any other result counts as a present source, see the
+    /// [module documentation](self).
     ///
     /// # Errors
     ///
     /// Returns an error if the credential source is present but unusable, for example if malformed
     /// or blank. Any specific error type must be converted into [`BoxError`]. Using `?` works.
-    /// Errors are handled according to [`TokenExtractionErrorPolicy`]. A rejecting policy reports
-    /// the first error as the source of [`AuthError::TokenExtraction`], where callers can downcast it. The built-in
+    /// Callers can downcast it from the source of [`AuthError::TokenExtraction`]. The built-in
     /// extractors report an [`AuthHeaderExtractError`] or a [`QueryParamExtractError`].
     ///
     /// The error never reaches the HTTP response. It may contain request data, which is only
@@ -68,46 +72,40 @@ fn log_extraction_error(level: tracing::Level, extractor: &dyn TokenExtractor, e
 
 /// Extract a JWT from `request` using `extractors`.
 ///
-/// Extractors are tried in their configured order. An absent source (`Ok(None)`) lets extraction
-/// continue with the next extractor. The first token is returned. `Ok(None)` means no extractor
-/// found its source.
+/// Applies the rules of the [module documentation](self), asking the extractors in their configured
+/// order and stopping at the second present credential source. `Ok(None)` means that no source was
+/// present.
 ///
 /// When `token_extraction_error_log_level` is set, every extractor error is logged at that level,
 /// including the extractor's [`Debug`](std::fmt::Debug) output and the detailed error. `None`
-/// disables these events. An error means that the current source was present but malformed. The
-/// default [`TokenExtractionErrorPolicy::Reject`] returns the first error as
-/// [`AuthError::TokenExtraction`], preventing a request containing, for example, a malformed
-/// `Authorization` header and a valid query token from authenticating with the query token.
-/// [`TokenExtractionErrorPolicy::Fallthrough`] tries the next extractor instead.
+/// disables these events.
 pub(crate) fn extract_jwt<'a>(
     request: &'a Request<axum::body::Body>,
     extractors: &NonEmpty<Arc<dyn TokenExtractor>>,
-    error_policy: TokenExtractionErrorPolicy,
     token_extraction_error_log_level: Option<tracing::Level>,
 ) -> Result<Option<ExtractedToken<'a>>, AuthError> {
+    let mut present: Option<Result<ExtractedToken<'a>, BoxError>> = None;
     for extractor in extractors {
-        match extractor.extract(request) {
-            Ok(Some(jwt)) => return Ok(Some(jwt)),
-            Ok(None) => {}
+        let outcome = match extractor.extract(request) {
+            Ok(None) => continue,
+            Ok(Some(jwt)) => Ok(jwt),
             Err(error) => {
                 if let Some(level) = token_extraction_error_log_level {
                     log_extraction_error(level, extractor.as_ref(), &error);
                 }
-
-                // Matched exhaustively on purpose: a future policy variant must be decided here
-                // rather than silently defaulting to one of the existing behaviors.
-                match error_policy {
-                    TokenExtractionErrorPolicy::Fallthrough => {}
-                    TokenExtractionErrorPolicy::Reject => {
-                        return Err(AuthError::TokenExtraction {
-                            source: Arc::from(error),
-                        });
-                    }
-                }
+                Err(error)
             }
+        };
+        if present.is_some() {
+            return Err(AuthError::MultipleCredentialSources);
         }
+        present = Some(outcome);
     }
-    Ok(None)
+    present
+        .transpose()
+        .map_err(|error| AuthError::TokenExtraction {
+            source: Arc::from(error),
+        })
 }
 
 #[cfg(test)]
@@ -126,7 +124,7 @@ mod tests {
 
     use super::{
         AuthError, AuthHeaderExtractError, AuthHeaderTokenExtractor, BoxError, ExtractedToken,
-        QueryParamTokenExtractor, TokenExtractionErrorPolicy, TokenExtractor, extract_jwt,
+        QueryParamTokenExtractor, TokenExtractor, extract_jwt,
     };
     use crate::test_support::CapturedLogs;
 
@@ -163,11 +161,23 @@ mod tests {
         }
     }
 
-    /// An extractor that always finds `token`, counting how often it was asked.
+    /// An extractor that always reports `token`, or an absent source if `None`, counting how often
+    /// it was asked.
     #[derive(Debug)]
     struct CountingTokenExtractor {
-        token: &'static str,
+        token: Option<&'static str>,
         calls: Arc<AtomicUsize>,
+    }
+
+    impl CountingTokenExtractor {
+        fn new(token: Option<&'static str>) -> (Arc<Self>, Arc<AtomicUsize>) {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let extractor = Arc::new(Self {
+                token,
+                calls: Arc::clone(&calls),
+            });
+            (extractor, calls)
+        }
     }
 
     impl TokenExtractor for CountingTokenExtractor {
@@ -176,7 +186,7 @@ mod tests {
             _request: &'a Request,
         ) -> Result<Option<ExtractedToken<'a>>, BoxError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            Ok(Some(ExtractedToken::Borrowed(self.token)))
+            Ok(self.token.map(ExtractedToken::Borrowed))
         }
     }
 
@@ -201,39 +211,28 @@ mod tests {
     }
 
     #[test]
-    fn the_first_extracted_token_wins_and_later_extractors_are_not_asked() {
-        let first_calls = Arc::new(AtomicUsize::new(0));
-        let later_calls = Arc::new(AtomicUsize::new(0));
+    fn a_single_token_is_returned_after_asking_every_extractor() {
+        let (first, first_calls) = CountingTokenExtractor::new(Some("first"));
+        let (later, later_calls) = CountingTokenExtractor::new(None);
         let extractors = NonEmpty::<Arc<dyn TokenExtractor>> {
-            head: Arc::new(CountingTokenExtractor {
-                token: "first",
-                calls: first_calls.clone(),
-            }),
-            tail: vec![Arc::new(CountingTokenExtractor {
-                token: "later",
-                calls: later_calls.clone(),
-            })],
+            head: first,
+            tail: vec![later],
         };
 
-        assert_that!(extract_jwt(
-            &request("/", None),
-            &extractors,
-            TokenExtractionErrorPolicy::default(),
-            None,
-        ))
-        .ok()
-        .some()
-        .is_equal_to("first");
+        assert_that!(extract_jwt(&request("/", None), &extractors, None))
+            .ok()
+            .some()
+            .is_equal_to("first");
         assert_that!(first_calls.load(Ordering::SeqCst))
             .with_subject_name("first extractor calls")
             .is_equal_to(1);
         assert_that!(later_calls.load(Ordering::SeqCst))
             .with_subject_name("later extractor calls")
-            .is_equal_to(0);
+            .is_equal_to(1);
     }
 
     #[test]
-    fn extraction_continues_after_an_absent_credential_source_under_both_policies() {
+    fn a_token_behind_absent_credential_sources_is_found() {
         let request = request("/?token=abc.def.ghi", None);
         let extractors = NonEmpty::<Arc<dyn TokenExtractor>> {
             head: Arc::new(AbsentTokenExtractor),
@@ -243,121 +242,28 @@ mod tests {
             ],
         };
 
-        for policy in [
-            TokenExtractionErrorPolicy::Reject,
-            TokenExtractionErrorPolicy::Fallthrough,
-        ] {
-            assert_that!(extract_jwt(&request, &extractors, policy, None))
-                .ok()
-                .some()
-                .is_equal_to("abc.def.ghi");
-        }
+        assert_that!(extract_jwt(&request, &extractors, None))
+            .ok()
+            .some()
+            .is_equal_to("abc.def.ghi");
     }
 
     #[test]
-    fn another_authorization_scheme_does_not_shadow_a_query_token_under_both_policies() {
+    fn another_authorization_scheme_is_no_credential_source() {
         let request = request("/?token=abc.def.ghi", Some("Basic dXNlcjpwYXNz"));
 
-        for policy in [
-            TokenExtractionErrorPolicy::Reject,
-            TokenExtractionErrorPolicy::Fallthrough,
-        ] {
-            assert_that!(extract_jwt(&request, &header_then_query(), policy, None))
-                .ok()
-                .some()
-                .is_equal_to("abc.def.ghi");
-        }
-    }
-
-    #[test]
-    fn fallthrough_policy_continues_after_a_blank_bearer_token() {
-        let request = request("/?token=abc.def.ghi", Some("Bearer "));
-
-        assert_that!(extract_jwt(
-            &request,
-            &header_then_query(),
-            TokenExtractionErrorPolicy::Fallthrough,
-            None,
-        ))
-        .ok()
-        .some()
-        .is_equal_to("abc.def.ghi");
-    }
-
-    #[test]
-    fn fallthrough_logging_does_not_expose_custom_extractor_or_error_details_by_default() {
-        let request = request("/?token=abc.def.ghi", None);
-        let extractors = NonEmpty::<Arc<dyn TokenExtractor>> {
-            head: Arc::new(SecretLeakingTokenExtractor),
-            tail: vec![Arc::new(QueryParamTokenExtractor::default())],
-        };
-        let logs = CapturedLogs::default();
-        let extracted = {
-            let _capture = logs.capture();
-            extract_jwt(
-                &request,
-                &extractors,
-                TokenExtractionErrorPolicy::Fallthrough,
-                None,
-            )
-        };
-
-        assert_that!(extracted)
+        assert_that!(extract_jwt(&request, &header_then_query(), None))
             .ok()
             .some()
             .is_equal_to("abc.def.ghi");
-        assert_that!(logs.contents())
-            .does_not_contain(DEBUG_SECRET)
-            .does_not_contain(ERROR_SECRET);
     }
 
     #[test]
-    fn enabled_extraction_error_logging_records_every_extractor_error_but_no_absent_source() {
-        let request = request("/?token=abc.def.ghi", Some("Bearer "));
-        let extractors = NonEmpty::<Arc<dyn TokenExtractor>> {
-            head: Arc::new(SecretLeakingTokenExtractor),
-            tail: vec![
-                Arc::new(AbsentTokenExtractor),
-                Arc::new(AuthHeaderTokenExtractor::default()),
-                Arc::new(QueryParamTokenExtractor::default()),
-            ],
-        };
-        let logs = CapturedLogs::default();
-        let extracted = {
-            let _capture = logs.capture();
-            extract_jwt(
-                &request,
-                &extractors,
-                TokenExtractionErrorPolicy::Fallthrough,
-                Some(tracing::Level::INFO),
-            )
-        };
+    fn a_single_unusable_credential_source_is_rejected_with_its_error() {
+        let request = request("/", Some("Bearer "));
 
-        assert_that!(extracted)
-            .ok()
-            .some()
-            .is_equal_to("abc.def.ghi");
-        assert_that!(logs.contents())
-            .contains_occurrences("Token extractor failed.", 2)
-            .contains(" INFO ")
-            .contains("SecretLeakingTokenExtractor")
-            .contains(DEBUG_SECRET)
-            .contains(ERROR_SECRET)
-            .contains("AuthHeaderTokenExtractor")
-            .does_not_contain("AbsentTokenExtractor");
-    }
-
-    #[test]
-    fn reject_policy_stops_at_a_malformed_credential_source_and_keeps_its_error() {
-        let request = request("/?token=abc.def.ghi", Some("Bearer "));
-
-        let error = extract_jwt(
-            &request,
-            &header_then_query(),
-            TokenExtractionErrorPolicy::Reject,
-            None,
-        )
-        .expect_err("the malformed header must reject extraction");
+        let error = extract_jwt(&request, &header_then_query(), None)
+            .expect_err("the blank header must reject extraction");
 
         let AuthError::TokenExtraction { source } = error else {
             panic!("expected a token extraction error, got {error:?}");
@@ -372,16 +278,92 @@ mod tests {
     }
 
     #[test]
-    fn no_source_at_all_yields_ok_none() {
-        let request = request("/", None);
-
-        for policy in [
-            TokenExtractionErrorPolicy::Reject,
-            TokenExtractionErrorPolicy::Fallthrough,
+    fn more_than_one_present_credential_source_is_rejected_whether_usable_or_not() {
+        for (uri, authorization) in [
+            ("/?token=abc.def.ghi", "Bearer abc.def.ghi"),
+            ("/?token=abc.def.ghi", "Bearer jkl.mno.pqr"),
+            ("/?token=abc.def.ghi", "Bearer "),
+            ("/?token=", "Bearer abc.def.ghi"),
+            ("/?token=", "Bearer "),
         ] {
-            assert_that!(extract_jwt(&request, &header_then_query(), policy, None,))
-                .ok()
-                .is_none();
+            assert_that!(extract_jwt(
+                &request(uri, Some(authorization)),
+                &header_then_query(),
+                None,
+            ))
+            .with_subject_name(format!("{uri} with {authorization:?}"))
+            .is_matching(pattern!(Err(AuthError::MultipleCredentialSources)));
         }
+    }
+
+    #[test]
+    fn extraction_stops_at_the_second_present_credential_source() {
+        let (first, _) = CountingTokenExtractor::new(Some("first"));
+        let (second, _) = CountingTokenExtractor::new(Some("second"));
+        let (third, third_calls) = CountingTokenExtractor::new(Some("third"));
+        let extractors = NonEmpty::<Arc<dyn TokenExtractor>> {
+            head: first,
+            tail: vec![second, third],
+        };
+
+        assert_that!(extract_jwt(&request("/", None), &extractors, None))
+            .is_matching(pattern!(Err(AuthError::MultipleCredentialSources)));
+        assert_that!(third_calls.load(Ordering::SeqCst))
+            .with_subject_name("third extractor calls")
+            .is_equal_to(0);
+    }
+
+    #[test]
+    fn extraction_logging_does_not_expose_custom_extractor_or_error_details_by_default() {
+        let request = request("/", None);
+        let extractors = NonEmpty::<Arc<dyn TokenExtractor>> {
+            head: Arc::new(SecretLeakingTokenExtractor),
+            tail: vec![Arc::new(QueryParamTokenExtractor::default())],
+        };
+        let logs = CapturedLogs::default();
+        let extracted = {
+            let _capture = logs.capture();
+            extract_jwt(&request, &extractors, None)
+        };
+
+        assert_that!(extracted).is_matching(pattern!(Err(AuthError::TokenExtraction { .. })));
+        assert_that!(logs.contents())
+            .does_not_contain(DEBUG_SECRET)
+            .does_not_contain(ERROR_SECRET);
+    }
+
+    #[test]
+    fn enabled_extraction_error_logging_records_every_extractor_error_but_no_absent_source() {
+        let request = request("/", Some("Bearer "));
+        let extractors = NonEmpty::<Arc<dyn TokenExtractor>> {
+            head: Arc::new(SecretLeakingTokenExtractor),
+            tail: vec![
+                Arc::new(AbsentTokenExtractor),
+                Arc::new(AuthHeaderTokenExtractor::default()),
+                Arc::new(QueryParamTokenExtractor::default()),
+            ],
+        };
+        let logs = CapturedLogs::default();
+        let extracted = {
+            let _capture = logs.capture();
+            extract_jwt(&request, &extractors, Some(tracing::Level::INFO))
+        };
+
+        assert_that!(extracted).is_matching(pattern!(Err(AuthError::MultipleCredentialSources)));
+        assert_that!(logs.contents())
+            .contains_occurrences("Token extractor failed.", 2)
+            .contains(" INFO ")
+            .contains("SecretLeakingTokenExtractor")
+            .contains(DEBUG_SECRET)
+            .contains(ERROR_SECRET)
+            .contains("AuthHeaderTokenExtractor")
+            .does_not_contain("AbsentTokenExtractor");
+    }
+
+    #[test]
+    fn no_source_at_all_yields_ok_none() {
+        assert_that!(extract_jwt(&request("/", None), &header_then_query(), None))
+            .ok()
+            .is_none();
     }
 }

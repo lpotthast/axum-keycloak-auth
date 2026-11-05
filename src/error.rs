@@ -99,12 +99,11 @@ pub enum ValidationPolicyError {
 
 /// Errors surfaced by the authentication and middleware API.
 ///
-/// [`Self::MissingToken`] means that no configured extractor found a credential source.
-/// [`Self::TokenExtraction`] means that a source was present but unusable.
-///
 /// The error retains underlying sources and validation reasons for direct validation and
 /// [`crate::PassthroughMode::Pass`] consumers. Its [`IntoResponse`] implementation returns:
 ///
+/// - `400 Bad Request` with the OAuth `invalid_request` code for credentials in more than one
+///   source.
 /// - `401 Unauthorized` for token-extraction errors and unavailable decoding keys.
 /// - `401 Unauthorized` with the OAuth `invalid_token` code for JWT decoding and validation errors.
 /// - `403 Forbidden` for role failures.
@@ -144,9 +143,7 @@ pub enum AuthError {
         source: RequestError,
     },
 
-    /// A credential source was present but unusable, and
-    /// [`TokenExtractionErrorPolicy::Reject`](crate::extract::TokenExtractionErrorPolicy::Reject)
-    /// rejected the request.
+    /// The only present credential source was unusable.
     ///
     /// The message is generic, so it can be returned in HTTP responses. The source is the
     /// extractor's error, which may contain request data. Downcast it to inspect it, for example
@@ -162,6 +159,11 @@ pub enum AuthError {
     /// No JWT could be extracted from the request.
     #[snafu(display("No JWT could be extracted from the request."))]
     MissingToken,
+
+    /// More than one configured extractor found its credential source in the request, see
+    /// [`crate::extract`].
+    #[snafu(display("The request carried credentials in more than one place."))]
+    MultipleCredentialSources,
 
     /// The JWT header could not be decoded.
     #[snafu(display("The JWT header could not be decoded. Source: {source}"))]
@@ -221,6 +223,19 @@ impl IntoResponse for AuthError {
             | AuthError::JsonParse { .. }
             | AuthError::TokenExpired
             | AuthError::InvalidToken { .. } => return invalid_token_response(),
+            err @ AuthError::MultipleCredentialSources => {
+                // RFC 6750 sections 2 and 3.1: a request using more than one method to transmit
+                // the token is an `invalid_request`.
+                return (
+                    StatusCode::BAD_REQUEST,
+                    [(
+                        WWW_AUTHENTICATE,
+                        HeaderValue::from_static("Bearer error=\"invalid_request\""),
+                    )],
+                    Json(json!({ "error": err.to_string() })),
+                )
+                    .into_response();
+            }
             err @ (AuthError::NoOidcDiscovery
             | AuthError::OidcDiscovery { source: _ }
             | AuthError::JwkEndpoint { source: _ }
@@ -323,6 +338,12 @@ mod tests {
                 AuthError::NoDecodingKeys,
                 r#"{"error":"There were no decoding keys available."}"#,
             ),
+            DescriptiveResponseCase {
+                error: AuthError::MultipleCredentialSources,
+                status: StatusCode::BAD_REQUEST,
+                challenge: Some("Bearer error=\"invalid_request\""),
+                body: r#"{"error":"The request carried credentials in more than one place."}"#,
+            },
             DescriptiveResponseCase {
                 error: AuthError::UnexpectedRole,
                 status: StatusCode::FORBIDDEN,

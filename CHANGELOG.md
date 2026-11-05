@@ -30,22 +30,25 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Breaking:** `TokenExtractor::extract` now returns `Result<Option<ExtractedToken>, extract::BoxError>`. An extractor
   reports an absent credential source as `Ok(None)`, and a present but unusable one as an error of any type, which `?`
   converts. A custom extractor that still returns an error such as `AuthError::MissingToken` for an absent source
-  therefore rejects the request under the new default `TokenExtractionErrorPolicy::Reject`.
+  therefore reports a present source and causes every request to be rejected.
   `dangerously_log_token_extraction_errors` no longer logs absent sources.
-- **Breaking:** `TokenExtractionErrorPolicy::Reject` is now the default, because RFC 6750 forbids clients to send a
-  token by more than one method in a request. A request whose higher-priority credential source is present but
-  unusable, such as a blank `Authorization: Bearer` header next to a valid query token, is now rejected instead of being
-  authenticated with the lower-priority token. The former default `Fallback` is renamed to `Fallthrough` and remains
-  available as an opt-out.
+- **Breaking:** Every configured token extractor is now asked, and a request with credentials in more than one source
+  is rejected with the new `AuthError::MultipleCredentialSources`, answered with `400 Bad Request` and a
+  `WWW-Authenticate: Bearer error="invalid_request"` challenge, because RFC 6750 forbids clients to send a token by
+  more than one method. This applies even if the sources carry the same valid token, and to a malformed higher-priority
+  source, such as a blank `Authorization: Bearer` header next to a valid query token, which 0.8.4 authenticated with
+  the query token by default.
+- **Breaking:** A sole credential source that is present but unusable now fails authentication with
+  `AuthError::TokenExtraction`, whose source is the extractor's error, such as the new public `AuthHeaderExtractError`
+  and `QueryParamExtractError` of the built-in extractors. 0.8.4 reported `AuthError::MissingToken` by default, and an
+  extraction-specific `AuthError` variant under `TokenExtractionErrorPolicy::Reject`. The response is still
+  `401 Unauthorized` with a `WWW-Authenticate: Bearer` challenge, but its body is now the generic
+  `{"error":"The request carried an unusable credential."}`, and a query token that is not valid UTF-8 no longer gets
+  the `invalid_token` challenge. `dangerously_log_authentication_errors` logs the extractor's error as the `source`
+  field.
 - `AuthHeaderTokenExtractor` now matches the `Bearer` scheme case-insensitively, as RFC 7235 requires, and treats an
   `Authorization` header with another scheme, such as `Basic`, as an absent credential source instead of an unusable
-  one. Such a header therefore neither rejects the request nor shadows a lower-priority token.
-- **Breaking:** `TokenExtractionErrorPolicy::Reject` now reports an unusable credential as `AuthError::TokenExtraction`,
-  whose source is the extractor's error, such as the new public `AuthHeaderExtractError` and `QueryParamExtractError`
-  of the built-in extractors. The response is still `401 Unauthorized` with a `WWW-Authenticate: Bearer` challenge, but
-  its body is now the generic `{"error":"The request carried an unusable credential."}` instead of describing the
-  problem, and a query token that is not valid UTF-8 no longer gets the `invalid_token` challenge.
-  `dangerously_log_authentication_errors` logs the extractor's error as the `source` field.
+  one. Such a header therefore neither fails authentication nor counts as a second credential source.
 
 ### Removed
 
@@ -60,6 +63,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Breaking:** Removed the `default-tls` and `rustls-tls` features and the default features, which only configured
   `reqwest` for the removed default client. Select `reqwest` features, such as the TLS backend, through the
   application's own `reqwest` dependency.
+- **Breaking:** Removed `TokenExtractionErrorPolicy` and the `KeycloakAuthLayer` `token_extraction_error_policy`
+  setting, which are meaningless now that credentials in more than one source are rejected. For now, there is no
+  opt-out for clients that send several tokens.
 - **Breaking:** Removed the `AuthError` variants `MissingAuthorizationHeader`, `MissingQueryParams`,
   `MissingTokenQueryParam`, `InvalidAuthorizationHeader`, `MissingBearerToken`, and `EmptyTokenQueryParam`. Absent
   credential sources are now reported by extractors as `Ok(None)`, and unusable ones as `AuthError::TokenExtraction`.

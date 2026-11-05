@@ -14,7 +14,7 @@ use serde::de::DeserializeOwned;
 use crate::{
     KeycloakAuthStatus, PassthroughMode,
     error::AuthError,
-    extract::{self, ExtractedToken, TokenExtractionErrorPolicy, TokenExtractor},
+    extract::{self, ExtractedToken, TokenExtractor},
     layer::KeycloakAuthLayer,
     logging::event_at_level,
     role::Role,
@@ -52,7 +52,6 @@ where
     inner: S,
     validator: Arc<Validator<R, Extra>>,
     token_extractors: Arc<NonEmpty<Arc<dyn TokenExtractor>>>,
-    token_extraction_error_policy: TokenExtractionErrorPolicy,
     passthrough_mode: PassthroughMode,
     authentication_error_log_level: Option<tracing::Level>,
     token_extraction_error_log_level: Option<tracing::Level>,
@@ -69,7 +68,6 @@ where
             inner,
             validator: Arc::new(layer.validator()),
             token_extractors: Arc::new(layer.token_extractors.clone()),
-            token_extraction_error_policy: layer.token_extraction_error_policy,
             passthrough_mode: layer.passthrough_mode,
             authentication_error_log_level: layer.dangerously_log_authentication_errors,
             token_extraction_error_log_level: layer.dangerously_log_token_extraction_errors,
@@ -152,7 +150,6 @@ where
         extract::extract_jwt(
             request,
             &self.token_extractors,
-            self.token_extraction_error_policy,
             self.token_extraction_error_log_level,
         )?
         .ok_or(AuthError::MissingToken)
@@ -183,12 +180,13 @@ mod tests {
         response::{IntoResponse, Response},
     };
     use jsonwebtoken::Algorithm;
+    use nonempty::NonEmpty;
     use serde_json::{Value, json};
     use tower::Service;
 
     use crate::{
         KeycloakAuthStatus, PassthroughMode,
-        extract::TokenExtractionErrorPolicy,
+        extract::{AuthHeaderTokenExtractor, QueryParamTokenExtractor, TokenExtractor},
         test_support::{
             CapturedLogs, RSA_KEY_A, TEST_KID, anonymous_request, assert_logged_iff,
             bearer_request, keycloak_claims, offline_layer, response_text, signed_token,
@@ -450,14 +448,18 @@ mod tests {
             (Some(tracing::Level::INFO), Some(tracing::Level::WARN)),
         ] {
             let mut layer = offline_layer();
-            layer.token_extraction_error_policy = TokenExtractionErrorPolicy::Fallthrough;
+            layer.token_extractors = NonEmpty::<Arc<dyn TokenExtractor>> {
+                head: Arc::new(AuthHeaderTokenExtractor::default()),
+                tail: vec![Arc::new(QueryParamTokenExtractor::default())],
+            };
             layer.dangerously_log_token_extraction_errors = token_extraction_error_log_level;
             layer.dangerously_log_authentication_errors = authentication_error_log_level;
             let mut service = KeycloakAuthService::new(tower::service_fn(no_content), &layer);
 
-            // The blank token is an extractor error. The fallthrough policy ignores it, so
-            // authentication finally fails because no token was extracted.
+            // The blank token is an extractor error. Authentication finally fails because the
+            // query parameter is a second credential source, whose error does not mention it.
             let request = Request::builder()
+                .uri("/?token=abc.def.ghi")
                 .header(AUTHORIZATION, "Bearer ")
                 .body(Body::empty())
                 .expect("the test request must build");
@@ -470,7 +472,7 @@ mod tests {
                     .expect("authentication middleware must not fail as a service")
             };
 
-            assert_that!(response.status()).is_equal_to(StatusCode::UNAUTHORIZED);
+            assert_that!(response.status()).is_equal_to(StatusCode::BAD_REQUEST);
             let contents = logs.contents();
             let extraction_logging_enabled = token_extraction_error_log_level.is_some();
             let authentication_logging_enabled = authentication_error_log_level.is_some();
@@ -494,7 +496,7 @@ mod tests {
             );
             assert_logged_iff(
                 &contents,
-                "No JWT could be extracted from the request.",
+                "The request carried credentials in more than one place.",
                 authentication_logging_enabled,
                 "final authentication error details",
             );
@@ -513,8 +515,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn by_default_a_rejected_credential_gets_a_generic_response_and_logs_its_cause_on_opt_in()
-    {
+    async fn a_rejected_credential_gets_a_generic_response_and_logs_its_cause_on_opt_in() {
         const CAUSE: &str = "The 'Authorization' header carried a blank 'Bearer' token.";
 
         for authentication_error_log_level in [None, Some(tracing::Level::WARN)] {

@@ -56,8 +56,8 @@ impl TokenExtractor for AuthHeaderTokenExtractor {
         // JWT never contains whitespace.
         let token = header_value.to_str().context(InvalidHeaderValueSnafu)?[scheme_len..].trim();
 
-        // A blank value can never be a JWT, and reporting it as an extracted token would stop
-        // extraction and shadow a valid token in a lower-priority source.
+        // A blank value can never be a JWT. Report the source as unusable rather than passing an
+        // empty token on to validation.
         ensure!(!token.is_empty(), EmptyBearerTokenSnafu);
 
         Ok(Some(Cow::Borrowed(token)))

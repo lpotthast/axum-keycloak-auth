@@ -89,12 +89,9 @@
 //!
 //! By default, the layer reads `Authorization: Bearer <token>`. Configure
 //! [`KeycloakAuthLayer::token_extractors`](layer::KeycloakAuthLayer::token_extractors) to use
-//! multiple or custom [`TokenExtractor`](extract::TokenExtractor) implementations. Extractors run
-//! in order, and the first token found is validated. An absent credential source always falls
-//! through. The default
-//! [`TokenExtractionErrorPolicy::Reject`](extract::TokenExtractionErrorPolicy::Reject) rejects the
-//! first unusable source, such as a blank `Bearer` token, because RFC 6750 forbids clients to send
-//! a token by more than one method.
+//! multiple or custom [`TokenExtractor`](extract::TokenExtractor) implementations. A request must
+//! carry its token in exactly one of their sources, as RFC 6750 requires. The [`extract`] module
+//! describes how other requests are rejected.
 //!
 //! [`QueryParamTokenExtractor`](extract::QueryParamTokenExtractor) reads tokens from URLs, where
 //! they can leak through browser history, referrer headers, and request logs.
