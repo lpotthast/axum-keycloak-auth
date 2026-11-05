@@ -11,6 +11,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **Breaking:** Removed the `decode` module, deprecated since 0.8.4. Import its types from `token` instead, for example
   `axum_keycloak_auth::token::KeycloakToken`.
+- **Breaking:** Removed the `oidc_discovery` module. Import `RequestError` from `error` instead.
 
 ## [0.8.4] - 2026-11-05
 

@@ -166,7 +166,6 @@ pub mod layer;
 mod logging;
 #[allow(missing_docs)]
 pub mod oidc;
-pub mod oidc_discovery;
 pub mod role;
 mod server_url;
 pub mod service;

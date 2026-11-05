@@ -12,7 +12,24 @@ use serde_json::json;
 use snafu::Snafu;
 use url::Url;
 
-use crate::http::RequestError;
+/// Errors returned while retrieving an OIDC discovery document or JWKS.
+#[derive(Debug, Clone, Snafu)]
+#[snafu(module(request_error), visibility(pub(crate)))]
+pub enum RequestError {
+    /// The request could not produce a successful HTTP response.
+    #[snafu(display("RequestError: Request failed or returned a non-success status"))]
+    Send {
+        /// The transport, timeout, redirect, or HTTP status error.
+        source: Arc<reqwest::Error>,
+    },
+
+    /// A successful response body could not be read or decoded as the expected JSON type.
+    #[snafu(display("RequestError: Could not decode payload"))]
+    Decode {
+        /// The body-reading or JSON-decoding error.
+        source: Arc<reqwest::Error>,
+    },
+}
 
 /// A Keycloak server URL that cannot serve as a base URL, such as a `mailto:` URL, so no realm URLs
 /// can be derived from it.
@@ -311,9 +328,9 @@ mod tests {
         response::IntoResponse,
     };
 
-    use crate::{http::RequestError, test_support::response_text};
+    use crate::test_support::response_text;
 
-    use super::AuthError;
+    use super::{AuthError, RequestError};
 
     const SENSITIVE_PROVIDER_ADDRESS: &str = "sensitive-provider.internal";
 

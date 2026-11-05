@@ -1,29 +1,13 @@
-//! HTTP client and errors for OIDC discovery and JWKS requests.
+//! HTTP client for OIDC discovery and JWKS requests.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::IntoUrl;
 use serde::de::DeserializeOwned;
-use snafu::{ResultExt, Snafu};
+use snafu::ResultExt;
 
-/// Errors returned while retrieving an OIDC discovery document or JWKS.
-#[derive(Debug, Clone, Snafu)]
-pub enum RequestError {
-    /// The request could not produce a successful HTTP response.
-    #[snafu(display("RequestError: Request failed or returned a non-success status"))]
-    Send {
-        /// The transport, timeout, redirect, or HTTP status error.
-        source: Arc<reqwest::Error>,
-    },
-
-    /// A successful response body could not be read or decoded as the expected JSON type.
-    #[snafu(display("RequestError: Could not decode payload"))]
-    Decode {
-        /// The body-reading or JSON-decoding error.
-        source: Arc<reqwest::Error>,
-    },
-}
+use crate::error::{RequestError, request_error};
 
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -50,9 +34,9 @@ pub(crate) async fn retrieve_json<T: DeserializeOwned>(
         .await
         .and_then(reqwest::Response::error_for_status)
         .map_err(Arc::new)
-        .context(SendSnafu {})?
+        .context(request_error::SendSnafu)?
         .json::<T>()
         .await
         .map_err(Arc::new)
-        .context(DecodeSnafu {})
+        .context(request_error::DecodeSnafu)
 }

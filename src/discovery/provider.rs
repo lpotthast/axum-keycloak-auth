@@ -12,8 +12,8 @@ use try_again::{StdDuration, delay, retry_async};
 use url::Url;
 
 use crate::{
-    error::{AuthError, JwkEndpointSnafu, JwkSetDiscoverySnafu, OidcDiscoverySnafu},
-    http::{RequestError, retrieve_json},
+    error::{AuthError, JwkEndpointSnafu, JwkSetDiscoverySnafu, OidcDiscoverySnafu, RequestError},
+    http::retrieve_json,
     oidc::OidcConfig,
 };
 

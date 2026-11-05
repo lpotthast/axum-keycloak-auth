@@ -37,8 +37,6 @@ target type of their arguments:
 
 ### Remove compatibility leftovers
 
-- Remove the `oidc_discovery` module, which only re-exports `RequestError`. Export `RequestError`
-  from `error` instead.
 - Remove `AuthError::NoJwkSetDiscovery` and `AuthError::CreateDecodingKey`. Nothing constructs them
   anymore. Discovery reports `NoDecodingKeys` instead.
 - Make the `oidc` module private. No public API uses its discovery-document models, and they are
