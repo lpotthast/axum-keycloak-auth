@@ -89,7 +89,7 @@ pub(crate) fn refresh_policy_without_jitter() -> RefreshPolicy {
 pub(crate) async fn discovered_instance(provider: &MockOidcServer) -> Arc<KeycloakAuthInstance> {
     let instance = Arc::new(KeycloakAuthInstance::new(config_for(provider)));
     wait_for_discovery_completion(&instance, 1).await;
-    assert_that!(instance.is_operational().await).is_true();
+    assert_that!(instance.is_operational()).is_true();
     instance
 }
 

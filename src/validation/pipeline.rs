@@ -552,7 +552,7 @@ mod tests {
             policy,
         ));
         wait_for_discovery_completion(&instance, 1).await;
-        assert_that!(instance.is_operational().await).is_true();
+        assert_that!(instance.is_operational()).is_true();
         instance
     }
 
@@ -628,7 +628,7 @@ mod tests {
         provider.make_discovery_unavailable().await;
         let instance = Arc::new(KeycloakAuthInstance::new(config_for(&provider)));
         wait_for_discovery_completion(&instance, 1).await;
-        assert_that!(instance.is_operational().await).is_false();
+        assert_that!(instance.is_operational()).is_false();
 
         let result = decode_legacy(&instance, &signed_token(&RSA_KEY_B, Some("key-b"))).await;
 
@@ -651,7 +651,7 @@ mod tests {
             .await
             .expect("the last successful key set must survive a failed refresh");
 
-        assert_that!(instance.is_operational().await).is_true();
+        assert_that!(instance.is_operational()).is_true();
         assert_that!(instance.refresh_state_snapshot()).matches(partial!(RefreshStateSnapshot {
             last_successful_at: IsSome,
             last_attempted_at: IsSome,
@@ -767,7 +767,7 @@ mod tests {
             refresh_policy_without_jitter(),
         ));
         wait_for_discovery_completion(&instance, 1).await;
-        assert_that!(instance.is_operational().await).is_false();
+        assert_that!(instance.is_operational()).is_false();
 
         rotate_to_key_b(&provider).await;
         clock.advance(time::Duration::seconds(1));
@@ -775,7 +775,7 @@ mod tests {
         decode_legacy(&instance, &signed_token(&RSA_KEY_B, Some("key-b")))
             .await
             .expect("a usable key set must recover discovery after failure backoff");
-        assert_that!(instance.is_operational().await).is_true();
+        assert_that!(instance.is_operational()).is_true();
         assert_that!(provider.discovery_requests()).is_equal_to(2);
         assert_that!(provider.jwks_requests()).is_equal_to(2);
     }

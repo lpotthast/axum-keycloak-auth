@@ -7,6 +7,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `KeycloakAuthInstance::is_operational` is no longer `async`. Remove the `.await` from its calls.
+
 ### Removed
 
 - **Breaking:** Removed the `decode` module, deprecated since 0.8.4. Import its types from `token` instead, for example

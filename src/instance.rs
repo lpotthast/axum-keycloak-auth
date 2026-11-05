@@ -178,9 +178,10 @@ impl KeycloakAuthInstance {
     ///
     /// A failed refresh does not make an instance non-operational while a previously discovered
     /// key set remains usable.
-    // Keep the public async API stable even though the published snapshot is now synchronous.
-    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
-    pub async fn is_operational(&self) -> bool {
+    ///
+    /// This only reads in-memory state and never waits for a running discovery.
+    #[must_use]
+    pub fn is_operational(&self) -> bool {
         self.discovery.is_operational()
     }
 
@@ -366,7 +367,7 @@ mod tests {
             .await
             .expect("discovery must succeed against a healthy provider");
 
-        assert_that!(instance.is_operational().await).is_true();
+        assert_that!(instance.is_operational()).is_true();
         assert_that!(instance.operational_status()).matches(partial!(OperationalStatus {
             is_operational: IsTrue,
             time_since_last_success: IsSome,
@@ -423,7 +424,7 @@ mod tests {
             .build()
             .expect("the mock provider URL must be accepted");
 
-        assert_that!(instance.is_operational().await).is_false();
+        assert_that!(instance.is_operational()).is_false();
         gate.release();
         within_test_timeout(
             "discovery must complete after the gate opens",
@@ -495,7 +496,7 @@ mod tests {
         .await;
 
         assert_that!(result).is_err();
-        assert_that!(instance.is_operational().await).is_false();
+        assert_that!(instance.is_operational()).is_false();
         assert_that!(instance.operational_status()).matches(partial!(OperationalStatus {
             is_operational: IsFalse,
             time_since_last_success: IsNone,
@@ -512,7 +513,7 @@ mod tests {
 
         assert_that!(instance.wait_for_discovery().await)
             .is_matching(pattern!(Err(AuthError::NoDecodingKeys)));
-        assert_that!(instance.is_operational().await).is_false();
+        assert_that!(instance.is_operational()).is_false();
         assert_that!(instance.operational_status()).matches(partial!(OperationalStatus {
             is_operational: IsFalse,
             time_since_last_success: IsNone,

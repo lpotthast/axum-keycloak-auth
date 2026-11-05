@@ -41,12 +41,6 @@ target type of their arguments:
 breaking change today. `ValidationPolicyError` and the configuration enums already are
 non-exhaustive.
 
-### Make `KeycloakAuthInstance::is_operational` synchronous
-
-It only reads in-memory state and is `async` solely to keep its 0.8.3 signature (see the
-`clippy::unused_async` allowance in `instance.rs`). `operational_status`, which reads the same
-state, is already synchronous.
-
 ### Signal an absent credential source without `AuthError`
 
 `TokenExtractor::extract` reports "no credential here" through a fixed set of `AuthError` variants
