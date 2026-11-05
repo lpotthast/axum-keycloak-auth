@@ -12,6 +12,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Breaking:** Removed the `decode` module, deprecated since 0.8.4. Import its types from `token` instead, for example
   `axum_keycloak_auth::token::KeycloakToken`.
 - **Breaking:** Removed the `oidc_discovery` module. Import `RequestError` from `error` instead.
+- **Breaking:** Removed the `AuthError::NoJwkSetDiscovery` and `AuthError::CreateDecodingKey` variants, which were no
+  longer returned. A discovery that yields no usable keys is reported as `AuthError::NoDecodingKeys`.
 
 ## [0.8.4] - 2026-11-05
 

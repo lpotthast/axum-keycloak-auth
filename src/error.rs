@@ -134,13 +134,6 @@ pub enum AuthError {
         source: RequestError,
     },
 
-    /// No JWKS is available.
-    ///
-    /// Retained for compatibility. Current discovery reports [`Self::NoDecodingKeys`] when a
-    /// provider response contains no usable keys.
-    #[snafu(display("Never discovered a JWK set."))]
-    NoJwkSetDiscovery,
-
     /// The JWKS endpoint was not a valid URL.
     #[snafu(display("Could not parse the JWK endpoint."))]
     JwkEndpoint {
@@ -193,18 +186,6 @@ pub enum AuthError {
     /// No JWT could be extracted from the request.
     #[snafu(display("No JWT could be extracted from the request."))]
     MissingToken,
-
-    /// A provider JWK could not be converted into a decoding key.
-    ///
-    /// Retained for compatibility. Current discovery skips unusable individual JWKs and reports
-    /// [`Self::NoDecodingKeys`] if none remain.
-    #[snafu(display(
-        "The DecodingKey, required for decoding tokens, could not be created. Source: {source}"
-    ))]
-    CreateDecodingKey {
-        /// The key-conversion error.
-        source: jsonwebtoken::errors::Error,
-    },
 
     /// The JWT header could not be decoded.
     #[snafu(display("The JWT header could not be decoded. Source: {source}"))]
@@ -266,10 +247,8 @@ impl IntoResponse for AuthError {
             | AuthError::InvalidToken { .. } => return invalid_token_response(),
             err @ (AuthError::NoOidcDiscovery
             | AuthError::OidcDiscovery { source: _ }
-            | AuthError::NoJwkSetDiscovery
             | AuthError::JwkEndpoint { source: _ }
-            | AuthError::JwkSetDiscovery { source: _ }
-            | AuthError::CreateDecodingKey { source: _ }) => (
+            | AuthError::JwkSetDiscovery { source: _ }) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Cow::Owned(err.to_string()),
             ),
@@ -343,8 +322,6 @@ mod tests {
     }
 
     fn descriptive_response_cases() -> Vec<DescriptiveResponseCase> {
-        use jsonwebtoken::errors::{Error, ErrorKind};
-
         // RFC 6750 section 3: a request without usable credentials gets a challenge without an
         // error code.
         let missing_credentials = |error, body| DescriptiveResponseCase {
@@ -411,10 +388,6 @@ mod tests {
                 r#"{"error":"Could not discover OIDC configuration."}"#,
             ),
             internal_error(
-                AuthError::NoJwkSetDiscovery,
-                r#"{"error":"Never discovered a JWK set."}"#,
-            ),
-            internal_error(
                 AuthError::JwkEndpoint {
                     source: url::Url::parse(SENSITIVE_PROVIDER_ADDRESS)
                         .expect_err("a host without a URL scheme must be rejected"),
@@ -426,12 +399,6 @@ mod tests {
                     source: provider_request_error(),
                 },
                 r#"{"error":"Could not discover the JWK set."}"#,
-            ),
-            internal_error(
-                AuthError::CreateDecodingKey {
-                    source: Error::from(ErrorKind::InvalidKeyFormat),
-                },
-                r#"{"error":"The DecodingKey, required for decoding tokens, could not be created. Source: InvalidKeyFormat"}"#,
             ),
         ]
     }
