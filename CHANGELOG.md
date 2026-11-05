@@ -7,7 +7,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.8.4] - 2026-10-19
+## [0.8.4] - 2026-11-05
 
 ### Security
 

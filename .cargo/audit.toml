@@ -1,0 +1,7 @@
+[advisories]
+ignore = [
+    # `astral-tokio-tar` is unmaintained. It is only pulled in by the `testcontainers`
+    # dev-dependency used for integration tests and never reaches crate users.
+    # Remove once `testcontainers` drops or replaces it.
+    "RUSTSEC-2026-0440",
+]

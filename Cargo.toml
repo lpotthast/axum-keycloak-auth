@@ -13,15 +13,13 @@ Protect axum routes with a JWT emitted by Keycloak.
 """
 categories = ["authentication", "web-programming"]
 keywords = ["keycloak", "auth", "jwt", "oidc", "axum"]
-exclude = [
-    "/.idea/",
-    "/.vscode/",
-    "/.github/",
-    "/.claude/",
-    "/AGENTS.md",
-    "/CLAUDE.md",
-    "/Justfile",
-    "/TODO.md",
+include = [
+    "/src/",
+    "/tests/",
+    "/CHANGELOG.md",
+    "/LICENSE-APACHE",
+    "/LICENSE-MIT",
+    "/README.md",
 ]
 
 [features]
