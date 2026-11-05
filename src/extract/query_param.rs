@@ -1,19 +1,18 @@
 use axum::extract::Request;
-use snafu::Snafu;
+use snafu::{OptionExt, Snafu, ensure};
 
-use crate::error::AuthError;
+use super::{BoxError, ExtractedToken, TokenExtractor};
 
-use super::{ExtractedToken, TokenExtractor};
-
-/// Errors specific to a present token query parameter.
-#[derive(Debug, Clone, Snafu)]
-pub(crate) enum QueryParamExtractError {
-    /// The configured token query parameter was present, but had a blank value, meaning it was
-    /// value-less (`?token`), empty (`?token=`), or consisted only of whitespace.
+/// Why [`QueryParamTokenExtractor`] could not extract a token from a present query parameter.
+#[derive(Debug, Snafu)]
+#[non_exhaustive]
+pub enum QueryParamExtractError {
+    /// The parameter had a blank value, meaning it was value-less (`?token`), empty (`?token=`),
+    /// or consisted only of whitespace.
     #[snafu(display("The token query parameter had a blank value."))]
     EmptyToken,
 
-    /// The configured token query parameter was present, but was not valid UTF-8.
+    /// The percent-decoded parameter value was not valid UTF-8.
     #[snafu(display("The token query parameter was not valid UTF-8."))]
     InvalidUtf8,
 }
@@ -21,8 +20,9 @@ pub(crate) enum QueryParamExtractError {
 /// Extracts a token from a query parameter.
 ///
 /// The parameter name defaults to `token`. If the parameter occurs more than once, only the first
-/// value is considered. Whitespace around the token is ignored, and empty and whitespace-only
-/// token values are rejected.
+/// value is considered. Whitespace around the token is ignored. A missing query string or
+/// parameter is an absent source. Empty and whitespace-only values are rejected with a
+/// [`QueryParamExtractError`].
 ///
 /// # Security
 ///
@@ -39,13 +39,16 @@ impl QueryParamTokenExtractor {
     pub fn extracting_key(key: impl Into<String>) -> Self {
         Self { key: key.into() }
     }
+}
 
-    /// Extracts a query-parameter token, reporting a missing query string or parameter as
-    /// `Ok(None)`.
-    pub(crate) fn try_extract<'a>(
-        &self,
-        request: &'a Request,
-    ) -> Result<Option<ExtractedToken<'a>>, QueryParamExtractError> {
+impl Default for QueryParamTokenExtractor {
+    fn default() -> Self {
+        Self::extracting_key("token")
+    }
+}
+
+impl TokenExtractor for QueryParamTokenExtractor {
+    fn extract<'a>(&self, request: &'a Request) -> Result<Option<ExtractedToken<'a>>, BoxError> {
         let Some(query) = request.uri().query() else {
             return Ok(None);
         };
@@ -58,13 +61,15 @@ impl QueryParamTokenExtractor {
         let Some(first_token) = tokens.next() else {
             return Ok(None);
         };
-        let first_token = first_token.ok_or(QueryParamExtractError::EmptyToken)?;
+        let first_token = first_token.context(EmptyTokenSnafu)?;
 
         // One allocation at most: a percent-decoded value is taken over as-is, a plain one is
         // copied once. Returning a borrowed token is not possible here because
         // `DuplicateQS::values` ties the lifetime of its key argument to the query string.
+        // The decoding error is dropped because it would carry the token's bytes.
         let mut first_token = String::from_utf8(first_token.into_owned())
-            .map_err(|_err| QueryParamExtractError::InvalidUtf8)?;
+            .ok()
+            .context(InvalidUtf8Snafu)?;
 
         // A JWT never contains whitespace. Trim in place, keeping the single allocation.
         first_token.truncate(first_token.trim_end().len());
@@ -72,33 +77,9 @@ impl QueryParamTokenExtractor {
 
         // A blank value can never be a JWT, and reporting it as an extracted token would stop
         // extraction and shadow a valid token in a lower-priority source.
-        if first_token.is_empty() {
-            return Err(QueryParamExtractError::EmptyToken);
-        }
+        ensure!(!first_token.is_empty(), EmptyTokenSnafu);
 
         Ok(Some(ExtractedToken::Owned(first_token)))
-    }
-}
-
-impl Default for QueryParamTokenExtractor {
-    fn default() -> Self {
-        Self::extracting_key("token")
-    }
-}
-
-impl TokenExtractor for QueryParamTokenExtractor {
-    fn extract<'a>(&self, request: &'a Request) -> Result<ExtractedToken<'a>, AuthError> {
-        match self.try_extract(request) {
-            Ok(Some(token)) => Ok(token),
-            // `try_extract` collapses "no query string" and "no such parameter" into `None`. The
-            // legacy contract distinguishes them, so the absent case is resolved here.
-            Ok(None) if request.uri().query().is_some() => Err(AuthError::MissingTokenQueryParam),
-            Ok(None) => Err(AuthError::MissingQueryParams),
-            Err(QueryParamExtractError::EmptyToken) => Err(AuthError::EmptyTokenQueryParam),
-            Err(error @ QueryParamExtractError::InvalidUtf8) => Err(AuthError::InvalidToken {
-                reason: error.to_string(),
-            }),
-        }
     }
 }
 
@@ -107,7 +88,7 @@ mod tests {
     use assertr::prelude::*;
     use axum::{body::Body, extract::Request};
 
-    use super::{AuthError, QueryParamExtractError, QueryParamTokenExtractor, TokenExtractor};
+    use super::{QueryParamExtractError, QueryParamTokenExtractor, TokenExtractor};
 
     fn request_with_uri(uri: &str) -> Request {
         Request::builder()
@@ -116,13 +97,26 @@ mod tests {
             .expect("test request must build")
     }
 
+    /// Extracts with `extractor`, downcasting an error to [`QueryParamExtractError`].
+    fn extract(
+        extractor: &QueryParamTokenExtractor,
+        uri: &str,
+    ) -> Result<Option<String>, QueryParamExtractError> {
+        extractor
+            .extract(&request_with_uri(uri))
+            .map(|token| token.map(String::from))
+            .map_err(|error| {
+                *error
+                    .downcast::<QueryParamExtractError>()
+                    .expect("the extractor must report a `QueryParamExtractError`")
+            })
+    }
+
     #[test]
     fn no_token_yields_ok_none() {
         let extractor = QueryParamTokenExtractor::default();
-        assert_that!(extractor.try_extract(&request_with_uri("/")))
-            .ok()
-            .is_none();
-        assert_that!(extractor.try_extract(&request_with_uri("/?other=1")))
+        assert_that!(extract(&extractor, "/")).ok().is_none();
+        assert_that!(extract(&extractor, "/?other=1"))
             .ok()
             .is_none();
     }
@@ -130,11 +124,11 @@ mod tests {
     #[test]
     fn empty_token_value_yields_an_error() {
         let extractor = QueryParamTokenExtractor::default();
-        assert_that!(extractor.try_extract(&request_with_uri("/?token")))
+        assert_that!(extract(&extractor, "/?token"))
             .is_matching(pattern!(Err(QueryParamExtractError::EmptyToken)));
-        assert_that!(extractor.try_extract(&request_with_uri("/?token=")))
+        assert_that!(extract(&extractor, "/?token="))
             .is_matching(pattern!(Err(QueryParamExtractError::EmptyToken)));
-        assert_that!(extractor.try_extract(&request_with_uri("/?token=&token=second")))
+        assert_that!(extract(&extractor, "/?token=&token=second"))
             .is_matching(pattern!(Err(QueryParamExtractError::EmptyToken)));
     }
 
@@ -142,7 +136,7 @@ mod tests {
     fn whitespace_only_token_value_yields_an_error() {
         let extractor = QueryParamTokenExtractor::default();
         for blank in ["/?token=%20", "/?token=%09", "/?token=%20%09%20"] {
-            assert_that!(extractor.try_extract(&request_with_uri(blank)))
+            assert_that!(extract(&extractor, blank))
                 .is_matching(pattern!(Err(QueryParamExtractError::EmptyToken)));
         }
     }
@@ -155,7 +149,7 @@ mod tests {
             "/?token=abc.def.ghi%20",
             "/?token=%09%20abc.def.ghi%20%09",
         ] {
-            assert_that!(extractor.try_extract(&request_with_uri(uri)))
+            assert_that!(extract(&extractor, uri))
                 .with_subject_name(uri)
                 .ok()
                 .some()
@@ -166,7 +160,7 @@ mod tests {
     #[test]
     fn single_valid_token_is_returned() {
         let extractor = QueryParamTokenExtractor::default();
-        assert_that!(extractor.try_extract(&request_with_uri("/?token=value")))
+        assert_that!(extract(&extractor, "/?token=value"))
             .ok()
             .some()
             .is_equal_to("value");
@@ -175,7 +169,7 @@ mod tests {
     #[test]
     fn multiple_tokens_first_one_is_returned() {
         let extractor = QueryParamTokenExtractor::default();
-        assert_that!(extractor.try_extract(&request_with_uri("/?token=first&token=second")))
+        assert_that!(extract(&extractor, "/?token=first&token=second"))
             .ok()
             .some()
             .is_equal_to("first");
@@ -184,9 +178,9 @@ mod tests {
     #[test]
     fn extraction_is_panic_free_across_unexpected_parameter_shapes() {
         let extractor = QueryParamTokenExtractor::default();
-        assert_that!(extractor.try_extract(&request_with_uri("/?token=%FF"))) // Invalid percent-decoded UTF-8.
+        assert_that!(extract(&extractor, "/?token=%FF")) // Invalid percent-decoded UTF-8.
             .is_matching(pattern!(Err(QueryParamExtractError::InvalidUtf8)));
-        assert_that!(extractor.try_extract(&request_with_uri("/?token=abc.def.ghi")))
+        assert_that!(extract(&extractor, "/?token=abc.def.ghi"))
             .ok()
             .some()
             .is_equal_to("abc.def.ghi");
@@ -195,48 +189,9 @@ mod tests {
     #[test]
     fn extracts_custom_parameter() {
         let extractor = QueryParamTokenExtractor::extracting_key("foo");
-        assert_that!(extractor.try_extract(&request_with_uri("/?foo=value")))
+        assert_that!(extract(&extractor, "/?foo=value"))
             .ok()
             .some()
             .is_equal_to("value");
-    }
-
-    // ----- The public `TokenExtractor` contract ------------------------------------------------
-
-    #[test]
-    fn extract_returns_the_token() {
-        assert_that!(
-            QueryParamTokenExtractor::default().extract(&request_with_uri("/?token=abc.def.ghi"))
-        )
-        .ok()
-        .is_equal_to("abc.def.ghi");
-    }
-
-    #[test]
-    fn extract_distinguishes_an_absent_query_string_from_an_absent_parameter() {
-        let extractor = QueryParamTokenExtractor::default();
-        assert_that!(extractor.extract(&request_with_uri("/")))
-            .is_matching(pattern!(Err(AuthError::MissingQueryParams)));
-        assert_that!(extractor.extract(&request_with_uri("/?other=value")))
-            .is_matching(pattern!(Err(AuthError::MissingTokenQueryParam)));
-    }
-
-    #[test]
-    fn extract_reports_a_blank_token() {
-        for uri in ["/?token", "/?token=", "/?token=%20"] {
-            assert_that!(QueryParamTokenExtractor::default().extract(&request_with_uri(uri)))
-                .with_subject_name(uri)
-                .is_matching(pattern!(Err(AuthError::EmptyTokenQueryParam)));
-        }
-    }
-
-    #[test]
-    fn extract_reports_invalid_utf8_as_an_invalid_token() {
-        let expected_reason = QueryParamExtractError::InvalidUtf8.to_string();
-
-        assert_that!(QueryParamTokenExtractor::default().extract(&request_with_uri("/?token=%FF")))
-            .is_matching(pattern!(
-                Err(AuthError::InvalidToken { reason }) if reason == &expected_reason
-            ));
     }
 }

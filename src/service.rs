@@ -14,7 +14,7 @@ use serde::de::DeserializeOwned;
 use crate::{
     KeycloakAuthStatus, PassthroughMode,
     error::AuthError,
-    extract::{self, TokenExtractionErrorPolicy, TokenExtractor},
+    extract::{self, ExtractedToken, TokenExtractionErrorPolicy, TokenExtractor},
     layer::KeycloakAuthLayer,
     logging::event_at_level,
     role::Role,
@@ -27,6 +27,12 @@ fn log_authentication_error(level: tracing::Level, error: &AuthError) {
             level,
             error = %error,
             missing_role = %role,
+            "Authentication failed"
+        ),
+        AuthError::TokenExtraction { source } => event_at_level!(
+            level,
+            error = %error,
+            source = %source,
             "Authentication failed"
         ),
         _ => event_at_level!(level, error = %error, "Authentication failed"),
@@ -93,65 +99,70 @@ where
     fn call(&mut self, mut request: Request<Body>) -> Self::Future {
         tracing::debug!("Validating request...");
 
-        let clone = self.inner.clone();
-
-        // Take the service that was ready!
-        let mut inner = std::mem::replace(&mut self.inner, clone);
-
-        let validator = self.validator.clone();
-        let token_extractors = self.token_extractors.clone();
-        let token_extraction_error_policy = self.token_extraction_error_policy;
-        let passthrough_mode = self.passthrough_mode;
-        let authentication_error_log_level = self.authentication_error_log_level;
-        let token_extraction_error_log_level = self.token_extraction_error_log_level;
+        // `poll_ready` was called on `self.inner`, so move that ready instance into the future and
+        // leave a fresh clone behind (see `tower::Service` docs on cloning services).
+        let clone = self.clone();
+        let mut this = std::mem::replace(self, clone);
 
         Box::pin(async move {
-            // Process the request.
-            let result = match extract::extract_jwt(
-                &request,
-                &token_extractors,
-                token_extraction_error_policy,
-                token_extraction_error_log_level,
-            ) {
-                Ok(Some(token)) => validator.validate(&token).await,
-                Ok(None) => Err(AuthError::MissingToken),
+            // Only the (borrowed or owned) token string is held across the `.await`; the request
+            // itself is not `Sync` and must not be.
+            let result = match this.extract_token(&request) {
+                Ok(token) => this.validator.validate(&token).await,
                 Err(error) => Err(error),
-            };
-
-            match result {
-                Ok(validated) => {
-                    if let Some(raw_claims) = validated.raw_claims {
-                        request.extensions_mut().insert(raw_claims);
-                    }
-                    match passthrough_mode {
-                        PassthroughMode::Block => {
-                            request.extensions_mut().insert(validated.token);
-                        }
-                        PassthroughMode::Pass => {
-                            request
-                                .extensions_mut()
-                                .insert(KeycloakAuthStatus::<R, Extra>::Success(validated.token));
-                        }
-                    }
-                    inner.call(request).await
+            }
+            .inspect_err(|error| this.log_failure(error))
+            .map(|validated| {
+                if let Some(raw_claims) = validated.raw_claims {
+                    request.extensions_mut().insert(raw_claims);
                 }
-                Err(err) => {
-                    if let Some(level) = authentication_error_log_level {
-                        log_authentication_error(level, &err);
-                    }
+                validated.token
+            });
 
-                    match passthrough_mode {
-                        PassthroughMode::Block => Ok(err.into_response()),
-                        PassthroughMode::Pass => {
-                            request
-                                .extensions_mut()
-                                .insert(KeycloakAuthStatus::<R, Extra>::Failure(Arc::new(err)));
-                            inner.call(request).await
-                        }
+            match this.passthrough_mode {
+                PassthroughMode::Block => match result {
+                    Ok(token) => {
+                        request.extensions_mut().insert(token);
                     }
+                    Err(error) => return Ok(error.into_response()),
+                },
+                PassthroughMode::Pass => {
+                    let status = match result {
+                        Ok(token) => KeycloakAuthStatus::<R, Extra>::Success(token),
+                        Err(error) => KeycloakAuthStatus::Failure(Arc::new(error)),
+                    };
+                    request.extensions_mut().insert(status);
                 }
             }
+            this.inner.call(request).await
         })
+    }
+}
+
+impl<S, R, Extra> KeycloakAuthService<S, R, Extra>
+where
+    R: Role,
+    Extra: DeserializeOwned + Clone,
+{
+    /// Extracts the request's token, treating the absence of any token as an error.
+    fn extract_token<'a>(
+        &self,
+        request: &'a Request<Body>,
+    ) -> Result<ExtractedToken<'a>, AuthError> {
+        extract::extract_jwt(
+            request,
+            &self.token_extractors,
+            self.token_extraction_error_policy,
+            self.token_extraction_error_log_level,
+        )?
+        .ok_or(AuthError::MissingToken)
+    }
+
+    /// Logs an authentication failure at the configured level, if any.
+    fn log_failure(&self, error: &AuthError) {
+        if let Some(level) = self.authentication_error_log_level {
+            log_authentication_error(level, error);
+        }
     }
 }
 
@@ -165,7 +176,10 @@ mod tests {
     use assertr::prelude::*;
     use axum::{
         body::Body,
-        http::{Request, StatusCode, header::WWW_AUTHENTICATE},
+        http::{
+            Request, StatusCode,
+            header::{AUTHORIZATION, WWW_AUTHENTICATE},
+        },
         response::{IntoResponse, Response},
     };
     use jsonwebtoken::Algorithm;
@@ -174,6 +188,7 @@ mod tests {
 
     use crate::{
         KeycloakAuthStatus, PassthroughMode,
+        extract::TokenExtractionErrorPolicy,
         test_support::{
             CapturedLogs, RSA_KEY_A, TEST_KID, anonymous_request, assert_logged_iff,
             bearer_request, keycloak_claims, offline_layer, response_text, signed_token,
@@ -439,11 +454,17 @@ mod tests {
             layer.dangerously_log_authentication_errors = authentication_error_log_level;
             let mut service = KeycloakAuthService::new(tower::service_fn(no_content), &layer);
 
+            // The malformed header is an extractor error. The default fallback policy ignores it,
+            // so authentication finally fails because no token was extracted.
+            let request = Request::builder()
+                .header(AUTHORIZATION, "Basic credentials")
+                .body(Body::empty())
+                .expect("the test request must build");
             let logs = CapturedLogs::default();
             let response = {
                 let _capture = logs.capture();
                 service
-                    .call(anonymous_request())
+                    .call(request)
                     .await
                     .expect("authentication middleware must not fail as a service")
             };
@@ -460,7 +481,7 @@ mod tests {
             );
             assert_logged_iff(
                 &contents,
-                "The 'Authorization' header was not present on a request.",
+                "The 'Authorization' header did not use the 'Bearer' scheme.",
                 extraction_logging_enabled,
                 "per-extractor error details",
             );
@@ -486,6 +507,55 @@ mod tests {
                 assert_that!(logs.event_containing("Authentication failed").level())
                     .with_subject_name("configured authentication error log level")
                     .is_equal_to(level);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rejected_credential_gets_a_generic_response_and_logs_its_cause_only_on_opt_in() {
+        const CAUSE: &str = "The 'Authorization' header did not use the 'Bearer' scheme.";
+
+        for authentication_error_log_level in [None, Some(tracing::Level::WARN)] {
+            let mut layer = offline_layer();
+            layer.token_extraction_error_policy = TokenExtractionErrorPolicy::Reject;
+            layer.dangerously_log_authentication_errors = authentication_error_log_level;
+            let mut service = KeycloakAuthService::new(tower::service_fn(no_content), &layer);
+
+            let request = Request::builder()
+                .header(AUTHORIZATION, "Basic credentials")
+                .body(Body::empty())
+                .expect("the test request must build");
+            let logs = CapturedLogs::default();
+            let response = {
+                let _capture = logs.capture();
+                service
+                    .call(request)
+                    .await
+                    .expect("authentication middleware must not fail as a service")
+            };
+
+            assert_that!(response.status()).is_equal_to(StatusCode::UNAUTHORIZED);
+            assert_that!(response.headers().get(WWW_AUTHENTICATE).cloned())
+                .some()
+                .ascii()
+                .is_equal_to("Bearer");
+            assert_that!(response_text(response).await)
+                .is_equal_to(r#"{"error":"The request carried an unusable credential."}"#);
+
+            let enabled = authentication_error_log_level.is_some();
+            assert_logged_iff(
+                &logs.contents(),
+                CAUSE,
+                enabled,
+                "the extractor's error as the logged cause",
+            );
+            if enabled {
+                assert_that!(
+                    logs.event_containing("Authentication failed")
+                        .field("source")
+                )
+                .with_subject_name("structured cause field")
+                .is_equal_to(Some(CAUSE));
             }
         }
     }

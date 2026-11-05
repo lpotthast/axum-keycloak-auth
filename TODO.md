@@ -17,14 +17,6 @@ target type of their arguments:
   documentation currently recommends when the validation policy defines its own audiences, so
   that advice must change with it.
 
-### Signal an absent credential source without `AuthError`
-
-`TokenExtractor::extract` reports "no credential here" through a fixed set of `AuthError` variants
-(`MissingToken`, `MissingAuthorizationHeader`, `MissingQueryParams`, `MissingTokenQueryParam`),
-which `extract_jwt` must recognize by name. Return `Result<Option<ExtractedToken>, AuthError>`
-instead, so that `Ok(None)` means absent and every error means present but unusable. This also
-removes the special case in `QueryParamTokenExtractor::extract`.
-
 ### Reject inconsistent layer configuration when building the layer
 
 A validation policy that requires an audience while none is configured rejects every token, but

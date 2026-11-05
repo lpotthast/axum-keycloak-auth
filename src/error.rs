@@ -99,11 +99,8 @@ pub enum ValidationPolicyError {
 
 /// Errors surfaced by the authentication and middleware API.
 ///
-/// The extraction-related variants are part of [`crate::extract::TokenExtractor::extract`]'s
-/// contract. [`Self::MissingAuthorizationHeader`], [`Self::MissingQueryParams`],
-/// [`Self::MissingTokenQueryParam`], and [`Self::MissingToken`] mean that an extractor's
-/// credential source was absent. Other extraction errors mean that a source was present but
-/// unusable.
+/// [`Self::MissingToken`] means that no configured extractor found a credential source.
+/// [`Self::TokenExtraction`] means that a source was present but unusable.
 ///
 /// The error retains underlying sources and validation reasons for direct validation and
 /// [`crate::PassthroughMode::Pass`] consumers. Its [`IntoResponse`] implementation returns:
@@ -147,40 +144,20 @@ pub enum AuthError {
         source: RequestError,
     },
 
-    /// The `Authorization` header was absent.
-    #[snafu(display("The 'Authorization' header was not present on a request."))]
-    MissingAuthorizationHeader,
-
-    /// The `Authorization` header was present but could not be represented as a string.
-    #[snafu(display(
-        "The 'Authorization' header was present on a request but its value could not be parsed. Reason: {reason}"
-    ))]
-    InvalidAuthorizationHeader {
-        /// Why the header value could not be parsed.
-        reason: String,
+    /// A credential source was present but unusable, and
+    /// [`TokenExtractionErrorPolicy::Reject`](crate::extract::TokenExtractionErrorPolicy::Reject)
+    /// rejected the request.
+    ///
+    /// The message is generic, so it can be returned in HTTP responses. The source is the
+    /// extractor's error, which may contain request data. Downcast it to inspect it, for example
+    /// to an [`AuthHeaderExtractError`](crate::extract::AuthHeaderExtractError) or a
+    /// [`QueryParamExtractError`](crate::extract::QueryParamExtractError) for the built-in
+    /// extractors.
+    #[snafu(display("The request carried an unusable credential."))]
+    TokenExtraction {
+        /// The extractor's error.
+        source: Arc<dyn std::error::Error + Send + Sync>,
     },
-
-    /// The `Authorization` header did not contain a non-blank `Bearer <token>` value.
-    #[snafu(display(
-        "The 'Authorization' header did not contain a non-blank 'Bearer <token>' value."
-    ))]
-    MissingBearerToken,
-
-    /// The request URI had no query string.
-    #[snafu(display("No query parameters were found on the request."))]
-    MissingQueryParams,
-
-    /// The query string did not contain the configured token parameter.
-    #[snafu(display(
-        "Query parameters were found on the request, but the expected token parameter wasn't."
-    ))]
-    MissingTokenQueryParam,
-
-    /// The configured token parameter was present but blank.
-    #[snafu(display(
-        "Query parameters were found on the request, and the expected token parameter was found, but it had no value assigned (\"?token=\")."
-    ))]
-    EmptyTokenQueryParam,
 
     /// No JWT could be extracted from the request.
     #[snafu(display("No JWT could be extracted from the request."))]
@@ -251,12 +228,7 @@ impl IntoResponse for AuthError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Cow::Owned(err.to_string()),
             ),
-            err @ (AuthError::MissingAuthorizationHeader
-            | AuthError::InvalidAuthorizationHeader { reason: _ }
-            | AuthError::MissingBearerToken
-            | AuthError::MissingQueryParams
-            | AuthError::MissingTokenQueryParam
-            | AuthError::EmptyTokenQueryParam
+            err @ (AuthError::TokenExtraction { source: _ }
             | AuthError::MissingToken
             | AuthError::NoDecodingKeys) => {
                 // RFC 6750 section 3: a request without usable credentials gets a challenge
@@ -306,7 +278,7 @@ mod tests {
         response::IntoResponse,
     };
 
-    use crate::test_support::response_text;
+    use crate::{extract::BoxError, test_support::response_text};
 
     use super::{AuthError, RequestError};
 
@@ -336,31 +308,12 @@ mod tests {
             body,
         };
         vec![
+            // The extractor's error never reaches the body.
             missing_credentials(
-                AuthError::MissingAuthorizationHeader,
-                r#"{"error":"The 'Authorization' header was not present on a request."}"#,
-            ),
-            missing_credentials(
-                AuthError::InvalidAuthorizationHeader {
-                    reason: String::from("non-ASCII header value"),
+                AuthError::TokenExtraction {
+                    source: Arc::from(BoxError::from("attacker-controlled extractor detail")),
                 },
-                r#"{"error":"The 'Authorization' header was present on a request but its value could not be parsed. Reason: non-ASCII header value"}"#,
-            ),
-            missing_credentials(
-                AuthError::MissingBearerToken,
-                r#"{"error":"The 'Authorization' header did not contain a non-blank 'Bearer <token>' value."}"#,
-            ),
-            missing_credentials(
-                AuthError::MissingQueryParams,
-                r#"{"error":"No query parameters were found on the request."}"#,
-            ),
-            missing_credentials(
-                AuthError::MissingTokenQueryParam,
-                r#"{"error":"Query parameters were found on the request, but the expected token parameter wasn't."}"#,
-            ),
-            missing_credentials(
-                AuthError::EmptyTokenQueryParam,
-                r#"{"error":"Query parameters were found on the request, and the expected token parameter was found, but it had no value assigned (\"?token=\")."}"#,
+                r#"{"error":"The request carried an unusable credential."}"#,
             ),
             missing_credentials(
                 AuthError::MissingToken,

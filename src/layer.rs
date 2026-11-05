@@ -128,9 +128,10 @@ where
 
     /// Severity for logging every error returned by a configured token extractor.
     ///
-    /// These events are independent of the final authentication outcome. They include absent
-    /// credential sources and errors ignored by [`TokenExtractionErrorPolicy::Fallback`], even if
-    /// a later extractor succeeds and the request is authenticated.
+    /// These events are independent of the final authentication outcome. They include errors
+    /// ignored by [`TokenExtractionErrorPolicy::Fallback`], even if a later extractor succeeds and
+    /// the request is authenticated. An absent credential source is not an error and is not
+    /// logged.
     ///
     /// # Security warning
     ///

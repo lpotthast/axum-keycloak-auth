@@ -27,6 +27,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Breaking:** `KeycloakAuthInstance::is_operational` is no longer `async`. Remove the `.await` from its calls.
 - **Breaking:** Marked `AuthError` and `RequestError` as `#[non_exhaustive]`, so future releases can add variants
   without a breaking change. Exhaustive `match` expressions on them need a wildcard arm.
+- **Breaking:** `TokenExtractor::extract` now returns `Result<Option<ExtractedToken>, extract::BoxError>`. An extractor
+  reports an absent credential source as `Ok(None)`, and a present but unusable one as an error of any type, which `?`
+  converts. A custom extractor that still returns an error such as `AuthError::MissingToken` for an absent source
+  therefore rejects the request under `TokenExtractionErrorPolicy::Reject`. `dangerously_log_token_extraction_errors`
+  no longer logs absent sources.
+- **Breaking:** `TokenExtractionErrorPolicy::Reject` now reports an unusable credential as `AuthError::TokenExtraction`,
+  whose source is the extractor's error, such as the new public `AuthHeaderExtractError` and `QueryParamExtractError`
+  of the built-in extractors. The response is still `401 Unauthorized` with a `WWW-Authenticate: Bearer` challenge, but
+  its body is now the generic `{"error":"The request carried an unusable credential."}` instead of describing the
+  problem, and a query token that is not valid UTF-8 no longer gets the `invalid_token` challenge.
+  `dangerously_log_authentication_errors` logs the extractor's error as the `source` field.
 
 ### Removed
 
@@ -41,6 +52,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Breaking:** Removed the `default-tls` and `rustls-tls` features and the default features, which only configured
   `reqwest` for the removed default client. Select `reqwest` features, such as the TLS backend, through the
   application's own `reqwest` dependency.
+- **Breaking:** Removed the `AuthError` variants `MissingAuthorizationHeader`, `MissingQueryParams`,
+  `MissingTokenQueryParam`, `InvalidAuthorizationHeader`, `MissingBearerToken`, and `EmptyTokenQueryParam`. Absent
+  credential sources are now reported by extractors as `Ok(None)`, and unusable ones as `AuthError::TokenExtraction`.
+  `AuthError::MissingToken` still reports that no extractor was able to ultimately find a token.
 
 ## [0.8.4] - 2026-11-05
 

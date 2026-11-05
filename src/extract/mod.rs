@@ -25,62 +25,60 @@ use nonempty::NonEmpty;
 
 use crate::{error::AuthError, logging::event_at_level};
 
-pub use auth_header::AuthHeaderTokenExtractor;
+pub use auth_header::{AuthHeaderExtractError, AuthHeaderTokenExtractor};
 pub use policy::TokenExtractionErrorPolicy;
-pub use query_param::QueryParamTokenExtractor;
+pub use query_param::{QueryParamExtractError, QueryParamTokenExtractor};
 
 /// An unprocessed compact JWT extracted from a request.
 ///
 /// The value may borrow from the request or own decoded data.
 pub type ExtractedToken<'a> = Cow<'a, str>;
 
-/// Returns whether a legacy [`AuthError`] represents an absent credential source.
-fn credential_absent(error: &AuthError) -> bool {
-    matches!(
-        error,
-        AuthError::MissingAuthorizationHeader
-            | AuthError::MissingQueryParams
-            | AuthError::MissingTokenQueryParam
-            | AuthError::MissingToken
-    )
-}
+/// A type-erased error returned by a [`TokenExtractor`].
+pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Extracts a compact JWT from one credential source in an Axum request.
 ///
 /// The crate provides [`AuthHeaderTokenExtractor`] and [`QueryParamTokenExtractor`].
-///
-/// An extractor signals that its credential source is absent with a missing-credential
-/// [`AuthError`] variant. Custom extractors should use [`AuthError::MissingToken`]. Every other
-/// error means that the source was present but unusable and is handled according to
-/// [`TokenExtractionErrorPolicy`].
 pub trait TokenExtractor: Send + Sync + std::fmt::Debug {
     /// Extracts a token from the request.
     ///
+    /// Returns `Ok(Some(token))` if the credential source carries a valid token, and `Ok(None)` if
+    /// the token is absent, which lets extraction continue with the next extractor.
+    ///
     /// # Errors
     ///
-    /// Returns an [`AuthError`] when this extractor cannot find or parse a token. See the trait
-    /// documentation for which variants mean that the credential source was absent.
-    fn extract<'a>(&self, request: &'a Request) -> Result<ExtractedToken<'a>, AuthError>;
+    /// Returns an error if the credential source is present but unusable, for example if malformed
+    /// or blank. Any specific error type must be converted into [`BoxError`]. Using `?` works.
+    /// Errors are handled according to [`TokenExtractionErrorPolicy`]. A rejecting policy reports
+    /// the first error as the source of [`AuthError::TokenExtraction`], where callers can downcast it. The built-in
+    /// extractors report an [`AuthHeaderExtractError`] or a [`QueryParamExtractError`].
+    ///
+    /// The error never reaches the HTTP response. It may contain request data, which is only
+    /// logged if explicitly enabled through
+    /// [`KeycloakAuthLayer::dangerously_log_token_extraction_errors`](crate::layer::KeycloakAuthLayer::dangerously_log_token_extraction_errors)
+    /// or
+    /// [`KeycloakAuthLayer::dangerously_log_authentication_errors`](crate::layer::KeycloakAuthLayer::dangerously_log_authentication_errors).
+    fn extract<'a>(&self, request: &'a Request) -> Result<Option<ExtractedToken<'a>>, BoxError>;
 }
 
-fn log_extraction_error(level: tracing::Level, extractor: &dyn TokenExtractor, error: &AuthError) {
+fn log_extraction_error(level: tracing::Level, extractor: &dyn TokenExtractor, error: &BoxError) {
     event_at_level!(level, ?extractor, %error, "Token extractor failed.");
 }
 
 /// Extract a JWT from `request` using `extractors`.
 ///
-/// Extractors are tried in their configured order. An absent source (see [`TokenExtractor`]) lets
-/// extraction continue with the next extractor. The first token is returned. `Ok(None)` means no
-/// extractor found its source.
+/// Extractors are tried in their configured order. An absent source (`Ok(None)`) lets extraction
+/// continue with the next extractor. The first token is returned. `Ok(None)` means no extractor
+/// found its source.
 ///
 /// When `token_extraction_error_log_level` is set, every extractor error is logged at that level,
 /// including the extractor's [`Debug`](std::fmt::Debug) output and the detailed error. `None`
-/// disables these events. Any non-absence error means that the current source was present but
-/// malformed. The compatibility-default [`TokenExtractionErrorPolicy::Fallback`] policy tries the
-/// next extractor, matching the behavior of earlier releases. [`TokenExtractionErrorPolicy::Reject`]
-/// propagates the first such error instead, preventing a request containing, for example, a
-/// malformed `Authorization` header and a valid query token from authenticating with the query
-/// token.
+/// disables these events. An error means that the current source was present but malformed. The
+/// default [`TokenExtractionErrorPolicy::Fallback`] policy tries the next extractor.
+/// [`TokenExtractionErrorPolicy::Reject`] propagates the first error instead, preventing a request
+/// containing, for example, a malformed `Authorization` header and a valid query token from
+/// authenticating with the query token.
 pub(crate) fn extract_jwt<'a>(
     request: &'a Request<axum::body::Body>,
     extractors: &NonEmpty<Arc<dyn TokenExtractor>>,
@@ -89,21 +87,22 @@ pub(crate) fn extract_jwt<'a>(
 ) -> Result<Option<ExtractedToken<'a>>, AuthError> {
     for extractor in extractors {
         match extractor.extract(request) {
-            Ok(jwt) => return Ok(Some(jwt)),
+            Ok(Some(jwt)) => return Ok(Some(jwt)),
+            Ok(None) => {}
             Err(error) => {
                 if let Some(level) = token_extraction_error_log_level {
                     log_extraction_error(level, extractor.as_ref(), &error);
-                }
-
-                if credential_absent(&error) {
-                    continue;
                 }
 
                 // Matched exhaustively on purpose: a future policy variant must be decided here
                 // rather than silently defaulting to one of the existing behaviors.
                 match error_policy {
                     TokenExtractionErrorPolicy::Fallback => {}
-                    TokenExtractionErrorPolicy::Reject => return Err(error),
+                    TokenExtractionErrorPolicy::Reject => {
+                        return Err(AuthError::TokenExtraction {
+                            source: Arc::from(error),
+                        });
+                    }
                 }
             }
         }
@@ -126,8 +125,8 @@ mod tests {
     use nonempty::NonEmpty;
 
     use super::{
-        AuthError, AuthHeaderTokenExtractor, ExtractedToken, QueryParamTokenExtractor,
-        TokenExtractionErrorPolicy, TokenExtractor, extract_jwt,
+        AuthError, AuthHeaderExtractError, AuthHeaderTokenExtractor, BoxError, ExtractedToken,
+        QueryParamTokenExtractor, TokenExtractionErrorPolicy, TokenExtractor, extract_jwt,
     };
     use crate::test_support::CapturedLogs;
 
@@ -151,14 +150,16 @@ mod tests {
         }
     }
 
-    /// A custom extractor written against the legacy contract, signalling an absent source with
-    /// the neutral `MissingToken` variant.
+    /// A custom extractor whose credential source is always absent.
     #[derive(Debug)]
-    struct LegacyTokenExtractor;
+    struct AbsentTokenExtractor;
 
-    impl TokenExtractor for LegacyTokenExtractor {
-        fn extract<'a>(&self, _request: &'a Request) -> Result<ExtractedToken<'a>, AuthError> {
-            Err(AuthError::MissingToken)
+    impl TokenExtractor for AbsentTokenExtractor {
+        fn extract<'a>(
+            &self,
+            _request: &'a Request,
+        ) -> Result<Option<ExtractedToken<'a>>, BoxError> {
+            Ok(None)
         }
     }
 
@@ -170,9 +171,12 @@ mod tests {
     }
 
     impl TokenExtractor for CountingTokenExtractor {
-        fn extract<'a>(&self, _request: &'a Request) -> Result<ExtractedToken<'a>, AuthError> {
+        fn extract<'a>(
+            &self,
+            _request: &'a Request,
+        ) -> Result<Option<ExtractedToken<'a>>, BoxError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            Ok(ExtractedToken::Borrowed(self.token))
+            Ok(Some(ExtractedToken::Borrowed(self.token)))
         }
     }
 
@@ -188,10 +192,11 @@ mod tests {
     }
 
     impl TokenExtractor for SecretLeakingTokenExtractor {
-        fn extract<'a>(&self, _request: &'a Request) -> Result<ExtractedToken<'a>, AuthError> {
-            Err(AuthError::InvalidToken {
-                reason: String::from(ERROR_SECRET),
-            })
+        fn extract<'a>(
+            &self,
+            _request: &'a Request,
+        ) -> Result<Option<ExtractedToken<'a>>, BoxError> {
+            Err(ERROR_SECRET.into())
         }
     }
 
@@ -231,7 +236,7 @@ mod tests {
     fn extraction_continues_after_an_absent_credential_source_under_both_policies() {
         let request = request("/?token=abc.def.ghi", None);
         let extractors = NonEmpty::<Arc<dyn TokenExtractor>> {
-            head: Arc::new(LegacyTokenExtractor),
+            head: Arc::new(AbsentTokenExtractor),
             tail: vec![
                 Arc::new(AuthHeaderTokenExtractor::default()),
                 Arc::new(QueryParamTokenExtractor::default()),
@@ -292,12 +297,13 @@ mod tests {
     }
 
     #[test]
-    fn enabled_extraction_error_logging_records_every_extractor_error() {
-        let request = request("/?token=abc.def.ghi", None);
+    fn enabled_extraction_error_logging_records_every_extractor_error_but_no_absent_source() {
+        let request = request("/?token=abc.def.ghi", Some("Basic credentials"));
         let extractors = NonEmpty::<Arc<dyn TokenExtractor>> {
             head: Arc::new(SecretLeakingTokenExtractor),
             tail: vec![
-                Arc::new(LegacyTokenExtractor),
+                Arc::new(AbsentTokenExtractor),
+                Arc::new(AuthHeaderTokenExtractor::default()),
                 Arc::new(QueryParamTokenExtractor::default()),
             ],
         };
@@ -322,8 +328,8 @@ mod tests {
             .contains("SecretLeakingTokenExtractor")
             .contains(DEBUG_SECRET)
             .contains(ERROR_SECRET)
-            .contains("LegacyTokenExtractor")
-            .contains("No JWT could be extracted from the request.");
+            .contains("AuthHeaderTokenExtractor")
+            .does_not_contain("AbsentTokenExtractor");
     }
 
     #[test]
@@ -342,16 +348,27 @@ mod tests {
     }
 
     #[test]
-    fn reject_policy_stops_at_a_malformed_credential_source() {
+    fn reject_policy_stops_at_a_malformed_credential_source_and_keeps_its_error() {
         let request = request("/?token=abc.def.ghi", Some("Basic credentials"));
 
-        assert_that!(extract_jwt(
+        let error = extract_jwt(
             &request,
             &header_then_query(),
             TokenExtractionErrorPolicy::Reject,
             None,
-        ))
-        .is_matching(pattern!(Err(AuthError::MissingBearerToken)));
+        )
+        .expect_err("the malformed header must reject extraction");
+
+        let AuthError::TokenExtraction { source } = error else {
+            panic!("expected a token extraction error, got {error:?}");
+        };
+        assert!(
+            matches!(
+                source.downcast_ref::<AuthHeaderExtractError>(),
+                Some(AuthHeaderExtractError::MissingBearerScheme)
+            ),
+            "expected the header extractor's error, got {source:?}"
+        );
     }
 
     #[test]
