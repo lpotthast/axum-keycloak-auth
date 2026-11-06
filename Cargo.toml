@@ -22,11 +22,22 @@ include = [
     "/README.md",
 ]
 
+[package.metadata.docs.rs]
+features = ["aws-lc-rs"]
+
+# The crate does not compile without one of the crypto backend features, and neither is a default.
+# Enable exactly one, see the README section "Crypto backend".
+[features]
+# Verify token signatures with jsonwebtoken's aws-lc-rs crypto backend.
+aws-lc-rs = ["jsonwebtoken/aws_lc_rs"]
+# Verify token signatures with jsonwebtoken's RustCrypto crypto backend.
+rust-crypto = ["jsonwebtoken/rust_crypto"]
+
 [dependencies]
 axum = "0.8.1"
 futures = "0.3.31"
 http = "1.2.0"
-jsonwebtoken = "9.3.0"
+jsonwebtoken = { version = "11.1.0", default-features = false }
 nonempty = { version = "0.11.0", features = ["std"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
 serde = "1.0.217"
@@ -47,6 +58,7 @@ uuid = { version = "1.11.0", features = ["v7"] }
 assertr = { version = "0.9.1", features = ["http", "partial", "serde-json"] }
 axum = { version = "0.8.9", features = ["macros"] }
 base64 = "0.23.0"
+jsonwebtoken = { version = "11.1.0", features = ["use_pem"] }
 keycloak = "26.6.2"
 testcontainers = "0.28.0"
 tokio = { version = "1.42.0", features = ["macros", "net", "rt-multi-thread", "time"] }

@@ -10,6 +10,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - Re-exported `reqwest`, the HTTP client library whose `Client` `KeycloakAuthInstance::builder` requires.
+- Re-exported `jsonwebtoken`, the JWT library this crate verifies tokens with, so that an application installing a
+  `jsonwebtoken::crypto::CryptoProvider` installs it into the same `jsonwebtoken` version this crate uses.
 
 ### Changed
 
@@ -18,6 +20,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `KeycloakAuthInstance::builder().config(config).http_client(http_client).build()`, which does not compile until both
   are set. The crate no longer creates a default client, so timeouts, proxies, and the TLS backend are entirely the
   application's choice.
+- **Breaking:** Updated `jsonwebtoken` from 9 to 11. `validation::Algorithm`, which this crate re-exports from it, is
+  now `#[non_exhaustive]`, and the `source` of `AuthError::Decode` and `AuthError::DecodeHeader` is now a
+  `jsonwebtoken` 11 error.
+- **Breaking:** The crate now requires one of the new `aws-lc-rs` and `rust-crypto` features, which select the crypto
+  backend `jsonwebtoken` verifies token signatures with. Neither is enabled by default, and the crate does not compile
+  without one, so enable one, for example with `features = ["aws-lc-rs"]`. The crate never installs a
+  `jsonwebtoken::crypto::CryptoProvider` itself. If both `jsonwebtoken` backends end up enabled, through feature
+  unification, the application must install one crypto provider at startup explicitly. Otherwise `jsonwebtoken`
+  panics on every token verification, which first shows with an authenticated request, not at startup. The README
+  section "Crypto backend" describes what each feature requires. Whichever provider verifies, this crate only lets a
+  decoding key verify tokens whose algorithm belongs to the key's own algorithm family.
 - **Breaking:** `KeycloakConfig::server` is now a `ServerUrl`, created with `ServerUrl::parse("https://...")`, through
   `FromStr`, or from a parsed `Url` with `ServerUrl::new(url)`. A URL that cannot serve as a base URL is rejected there
   with an `InvalidServerUrlError`, so `KeycloakAuthInstanceBuilder::build` no longer returns a `Result`, and

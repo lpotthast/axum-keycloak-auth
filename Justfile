@@ -12,11 +12,11 @@ install-tools:
 
 # Check if the current dependency version bounds are sufficient.
 minimal-versions:
-    cargo minimal-versions check --workspace --direct
+    cargo minimal-versions check --workspace --direct --features aws-lc-rs
 
 # Find the minimum supported rust version.
 msrv:
-    cargo msrv find
+    cargo msrv find --features aws-lc-rs
 
 # Check whether current changes require a breaking release.
 semver-checks:
@@ -32,8 +32,12 @@ clippy:
 
 # Run all tests, including integration tests (requires Podman to launch Keycloak containers).
 # We pass the `--nocapture` flag to be able to see tracing output.
+# The crate needs exactly one crypto backend feature, so tests run once per backend. Never with
+# `--all-features`, which enables both backends, leaving jsonwebtoken unable to choose one, so that
+# every token verification panics.
 test:
-    cargo test --all --all-features -- --nocapture
+    cargo test --all --features aws-lc-rs -- --nocapture
+    cargo test --lib --features rust-crypto
 
 # Build the crate documentation.
 build-docs:

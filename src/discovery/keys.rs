@@ -6,7 +6,7 @@
 
 use std::{fmt::Debug, sync::Arc};
 
-use jsonwebtoken::jwk::{AlgorithmParameters, Jwk, PublicKeyUse};
+use jsonwebtoken::jwk::{AlgorithmParameters, PublicKeyUse};
 
 use crate::oidc::OidcConfig;
 
@@ -22,10 +22,28 @@ impl IndexedDecodingKeys {
     fn from_jwks(jwk_set: &jsonwebtoken::jwk::JwkSet) -> Self {
         let mut keys = Vec::new();
         for jwk in &jwk_set.keys {
-            if !is_signature_verification_key(jwk) {
+            match &jwk.algorithm {
+                AlgorithmParameters::RSA(_)
+                | AlgorithmParameters::EllipticCurve(_)
+                | AlgorithmParameters::OctetKeyPair(_) => {}
+                // A symmetric key in a published JWKS would let anyone who can read the set forge
+                // tokens.
+                AlgorithmParameters::OctetKey(_) => {
+                    tracing::debug!(kid = ?jwk.common.key_id, "Ignoring a symmetric JWK.");
+                    continue;
+                }
+                _ => {
+                    tracing::warn!(
+                        kid = ?jwk.common.key_id,
+                        "Ignoring a JWK with an unsupported key type."
+                    );
+                    continue;
+                }
+            }
+            if jwk.common.public_key_use == Some(PublicKeyUse::Encryption) {
                 tracing::debug!(
                     kid = ?jwk.common.key_id,
-                    "Ignoring a JWK that is symmetric or published for encryption."
+                    "Ignoring a JWK published for encryption."
                 );
                 continue;
             }
@@ -76,14 +94,6 @@ impl IndexedDecodingKeys {
             .filter(move |(key_id, _key)| key_id.as_deref() != Some(kid))
             .map(|(_key_id, key)| key)
     }
-}
-
-/// Whether `jwk` may verify token signatures. A symmetric `oct` key in a published JWKS would let
-/// anyone who can read the set forge tokens, and keys published for encryption (`use: enc`) are
-/// not signature keys.
-fn is_signature_verification_key(jwk: &Jwk) -> bool {
-    !matches!(jwk.algorithm, AlgorithmParameters::OctetKey(_))
-        && jwk.common.public_key_use != Some(PublicKeyUse::Encryption)
 }
 
 pub(crate) struct DiscoveredData {
@@ -165,7 +175,7 @@ mod tests {
         jwk::{Jwk, JwkSet, PublicKeyUse},
     };
 
-    use crate::test_support::{RSA_KEY_A, RSA_KEY_B};
+    use crate::test_support::{CapturedLogs, RSA_KEY_A, RSA_KEY_B};
 
     use super::IndexedDecodingKeys;
 
@@ -208,5 +218,31 @@ mod tests {
         assert_that!(keys.exact("signature").map(Iterator::count))
             .some()
             .is_equal_to(1);
+    }
+
+    #[test]
+    fn keys_of_an_unsupported_type_are_ignored() {
+        let unsupported: Jwk = serde_json::from_value(serde_json::json!({
+            "kty": "unsupported",
+            "kid": "unsupported",
+        }))
+        .expect("a JWK of an unknown key type must deserialize");
+
+        let logs = CapturedLogs::default();
+        let keys = {
+            let _capture = logs.capture();
+            IndexedDecodingKeys::from_jwks(&JwkSet {
+                keys: vec![
+                    unsupported,
+                    RSA_KEY_A.jwk(Some("signature"), Algorithm::RS256),
+                ],
+            })
+        };
+
+        assert_that!(keys.len()).is_equal_to(1);
+        assert_that!(keys.exact("unsupported").map(Iterator::count)).is_none();
+        let event = logs.event_containing("Ignoring a JWK with an unsupported key type.");
+        assert_that!(event.level()).is_equal_to(tracing::Level::WARN);
+        assert_that!(event.field("kid")).is_equal_to(Some("Some(\"unsupported\")"));
     }
 }

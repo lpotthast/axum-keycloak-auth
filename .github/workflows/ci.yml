@@ -37,7 +37,8 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --all-targets --locked
+      - run: cargo check --all-targets --features aws-lc-rs --locked
+      - run: cargo check --all-targets --features rust-crypto --locked
 
   clippy:
     runs-on: ubuntu-latest
@@ -57,11 +58,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Library tests
-        run: cargo test --lib --locked
+        run: cargo test --lib --features aws-lc-rs --locked
+      - name: Library tests (rust-crypto backend)
+        run: cargo test --lib --features rust-crypto --locked
       - name: Documentation tests
-        run: cargo test --doc --locked
+        run: cargo test --doc --features aws-lc-rs --locked
       - name: Role macro tests
-        run: cargo test --test role_macros --locked
+        run: cargo test --test role_macros --features aws-lc-rs --locked
 
   integration-test:
     name: Test (Keycloak integration)
@@ -71,7 +74,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --test integration_test --locked -- --nocapture
+      - run: cargo test --test integration_test --features aws-lc-rs --locked -- --nocapture
 
   msrv:
     name: MSRV (Rust 1.89.0)
@@ -82,9 +85,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-targets --all-features --locked
       - name: Library tests
-        run: cargo test --lib --all-features --locked
+        run: cargo test --lib --features aws-lc-rs --locked
+      - name: Library tests (rust-crypto backend)
+        run: cargo test --lib --features rust-crypto --locked
       - name: Documentation tests
-        run: cargo test --doc --all-features --locked
+        run: cargo test --doc --features aws-lc-rs --locked
 
   doc:
     name: Documentation
@@ -111,7 +116,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo package --locked
+      - run: cargo package --features aws-lc-rs --locked
 
   audit:
     name: RustSec audit

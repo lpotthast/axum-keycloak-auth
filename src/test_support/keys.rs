@@ -207,10 +207,13 @@ mod tests {
             Algorithm::HS256,
         )
         .expect("HMAC over the public point must sign");
+        assert_that!(published.try_get_as_bytes())
+            .ok()
+            .is_equal_to(EC_KEY_A.public_point().as_slice());
         assert_that!(jsonwebtoken::crypto::verify(
             &hmac_with_public_point,
             message.as_bytes(),
-            &published,
+            &DecodingKey::from_secret(&EC_KEY_A.public_point()),
             Algorithm::HS256,
         ))
         .ok()

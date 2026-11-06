@@ -4,4 +4,12 @@ ignore = [
     # dev-dependency used for integration tests and never reaches crate users.
     # Remove once `testcontainers` drops or replaces it.
     "RUSTSEC-2026-0440",
+    # `rsa` (Marvin attack) and `crypto-bigint` (timing variability) are only pulled in by
+    # jsonwebtoken's RustCrypto backend, behind the optional `rust-crypto` feature. Both leak
+    # information about secret values through timing. This crate only verifies signatures, which
+    # handles public keys and public token data, and never processes a private key outside of
+    # tests with throwaway fixtures. Remove once jsonwebtoken's RustCrypto backend moves to fixed
+    # releases.
+    "RUSTSEC-2023-0071",
+    "RUSTSEC-2026-0387",
 ]

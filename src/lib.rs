@@ -59,6 +59,14 @@
 //! and TLS backend. Build it with the same `reqwest` major version as this crate, which also
 //! re-exports it as [`reqwest`].
 //!
+//! Token signatures are verified by `jsonwebtoken`, using the crypto backend selected through the
+//! `aws-lc-rs` or `rust-crypto` feature. Neither is enabled by default, and the crate does not
+//! compile without one. Enable exactly one of them. If both of `jsonwebtoken`'s backends end up
+//! enabled in the dependency graph, `jsonwebtoken` cannot choose one and panics on every token
+//! verification, unless the application installs a [`jsonwebtoken::crypto::CryptoProvider`] at
+//! startup. This crate never installs a provider itself. It re-exports the `jsonwebtoken` version
+//! it uses as [`jsonwebtoken`].
+//!
 //! Apply the layer only to protected routes. Share one `KeycloakAuthInstance` across layers so
 //! they use one key cache and one refresh coordinator.
 //!
@@ -149,6 +157,12 @@
 #![warn(missing_docs)]
 #![deny(clippy::unwrap_used)]
 
+#[cfg(not(any(feature = "aws-lc-rs", feature = "rust-crypto")))]
+compile_error!(
+    "axum-keycloak-auth needs a crypto backend to verify token signatures. Enable exactly one of its \
+     `aws-lc-rs` or `rust-crypto` features. See the README section \"Crypto backend\"."
+);
+
 use std::sync::Arc;
 
 use role::Role;
@@ -180,6 +194,14 @@ pub use url::Url;
 /// directly. A direct dependency is also how an application selects `reqwest` features, such as
 /// its TLS backend.
 pub use reqwest;
+
+/// JWT library this crate verifies token signatures with.
+///
+/// Install a custom `CryptoProvider` through this re-export, as in
+/// `axum_keycloak_auth::jsonwebtoken::crypto::CryptoProvider::install_default`, or through a direct
+/// dependency on the same `jsonwebtoken` major version. A provider installed into another
+/// `jsonwebtoken` version has no effect on this crate.
+pub use jsonwebtoken;
 
 /// Non-empty collection type used for configured token extractors.
 pub use nonempty::NonEmpty;

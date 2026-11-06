@@ -27,18 +27,64 @@ restarts.
 
 ## Installation
 
-Add `reqwest` as well, to build the HTTP client the crate uses for OIDC discovery. It must be the same major version as
-the one this crate depends on (0.13):
+Enable one of the crypto backend features, see [Crypto backend](#crypto-backend). Add `reqwest` as well, to build the
+HTTP client the crate uses for OIDC discovery. It must be the same major version as the one this crate depends on
+(0.13):
 
 ```toml
 [dependencies]
-axum-keycloak-auth = "0.9.0"
+axum-keycloak-auth = { version = "0.9.0", features = ["aws-lc-rs"] }
 reqwest = "0.13"
 ```
 
 This crate enables no `reqwest` TLS features itself. Choose the
 [`reqwest` features](https://docs.rs/reqwest/0.13/reqwest/#optional-features) your application needs, in particular
 the TLS backend. The defaults use rustls.
+
+### Crypto backend
+
+Token signatures are verified by `jsonwebtoken` 11, which needs a crypto backend. Select it with exactly one of these
+features. Neither is enabled by default, and the crate does not compile without one.
+
+- `aws-lc-rs` selects [aws-lc-rs](https://crates.io/crates/aws-lc-rs), which `reqwest`'s default rustls TLS backend
+  uses as well. It builds C code, see its [build requirements](https://aws.github.io/aws-lc-rs/requirements/index.html).
+- `rust-crypto` selects the pure-Rust [RustCrypto](https://github.com/RustCrypto) crates. `reqwest` can also be
+  configured to use this backend.
+
+`jsonwebtoken` picks its backend from its own `aws_lc_rs` and `rust_crypto` features, which every crate in your
+dependency graph can enable. This crate never installs a provider itself. What you need to do depends on the feature
+you enable:
+
+- **`aws-lc-rs`:** Nothing else, as long as no other crate enables `jsonwebtoken`'s `rust_crypto` feature. If one does,
+  install the aws-lc-rs provider before the first token is verified, for example at the start of `main`:
+
+  ```rust
+  axum_keycloak_auth::jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER
+      .install_default()
+      .expect("no other jsonwebtoken crypto provider must be installed yet");
+  ```
+
+- **`rust-crypto`:** Nothing else, as long as no other crate enables `jsonwebtoken`'s `aws_lc_rs` feature. If one does,
+  install the RustCrypto provider before the first token is verified, for example at the start of `main`:
+
+  ```rust
+  axum_keycloak_auth::jsonwebtoken::crypto::rust_crypto::DEFAULT_PROVIDER
+      .install_default()
+      .expect("no other jsonwebtoken crypto provider must be installed yet");
+  ```
+
+Enabling both features of this crate also enables both backends, so it requires installing one of the providers above.
+Without an installed provider, `jsonwebtoken` cannot choose between two enabled backends and panics on every token
+verification, which first shows with an authenticated request, not at startup.
+`cargo tree -e features -i jsonwebtoken` lists which crates enable which `jsonwebtoken` features.
+
+To use a custom `jsonwebtoken::crypto::CryptoProvider`, still enable one of the features and install your provider
+with `install_default` before the first token is verified. An installed provider takes precedence over the one the
+features select. Whichever provider verifies, this crate only lets a decoding key verify tokens whose algorithm belongs
+to the key's own algorithm family.
+
+Install providers through the `axum_keycloak_auth::jsonwebtoken` re-export, or a direct dependency on the same
+`jsonwebtoken` major version, because a provider installed into another version has no effect on this crate.
 
 ## Usage
 

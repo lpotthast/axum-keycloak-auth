@@ -97,14 +97,13 @@ where
         // jsonwebtoken. All claim-policy checks are enforced by this crate itself, in
         // `try_decode`. Depends only on the token header, so both decode attempts share it.
         //
-        // Signature validation stays enabled so that jsonwebtoken applies its algorithm-family
-        // guard: a decoding key may only verify a token whose header algorithm belongs to that
-        // key's own family. Without that guard, the header algorithm alone would select the
-        // verifier, which is the classic algorithm-confusion vector: an `HS*` header would make
-        // the HMAC verifier treat published asymmetric key material as a shared secret (forgeable
-        // by anyone who can read the JWKS), and a header from a family other than the key's would
-        // reach key accessors that the key type does not support. Only `exp` and `aud` are taken
-        // away from jsonwebtoken here, because this crate's policy owns them.
+        // A decoding key may only verify a token whose header algorithm belongs to that key's
+        // own family, which `verify_signature` enforces before handing the key to jsonwebtoken.
+        // Without that binding, the header algorithm alone would select the verifier, which is the
+        // classic algorithm-confusion vector: an `HS*` header would make the HMAC verifier treat
+        // published asymmetric key material as a shared secret (forgeable by anyone who can read
+        // the JWKS). Signature validation stays enabled. Only `exp` and `aud` are taken away from
+        // jsonwebtoken here, because this crate's policy owns them.
         let mut validation = jsonwebtoken::Validation::new(header.alg);
         validation.validate_exp = false;
         validation.validate_aud = false;
@@ -285,9 +284,15 @@ fn log_unverified_jwt_header(logging: Option<UnverifiedJwtHeaderLogging>, header
 /// Candidate-key failures try the next key, preferring an error from the token's algorithm family
 /// over a family mismatch when no key succeeds.
 ///
-/// [`jsonwebtoken::decode`] keeps signature validation enabled, binding the header algorithm to the
-/// decoding key's algorithm family. The caller applies the validation policy to the returned
-/// claims.
+/// A key whose algorithm family differs from that of any algorithm `validation` permits is rejected
+/// with [`ErrorKind::InvalidAlgorithm`](jsonwebtoken::errors::ErrorKind::InvalidAlgorithm) without
+/// being passed to [`jsonwebtoken::decode`], which in turn only accepts a token whose header
+/// algorithm `validation` permits. This check is not redundant with the built-in jsonwebtoken
+/// crypto providers. They also refuse a key of another family, but report it as
+/// [`ErrorKind::InvalidKeyFormat`](jsonwebtoken::errors::ErrorKind::InvalidKeyFormat), which is
+/// not a candidate-key rejection, so a mixed-family key set would stop at the first key of another
+/// family instead of trying the rest. A custom `CryptoProvider` installed by the application need
+/// not refuse such a key at all. The caller applies the validation policy to the returned claims.
 fn verify_signature<'d>(
     raw_token: &RawToken<'_>,
     validation: &jsonwebtoken::Validation,
@@ -295,7 +300,16 @@ fn verify_signature<'d>(
 ) -> Result<RawClaims, AuthError> {
     let mut result: Result<RawClaims, AuthError> = Err(AuthError::NoDecodingKeys);
     for key in decoding_keys {
-        match jsonwebtoken::decode::<RawClaims>(raw_token.0, key, validation) {
+        let decoded = if validation
+            .algorithms
+            .iter()
+            .all(|algorithm| algorithm.family() == key.family())
+        {
+            jsonwebtoken::decode::<RawClaims>(raw_token.0, key, validation)
+        } else {
+            Err(jsonwebtoken::errors::ErrorKind::InvalidAlgorithm.into())
+        };
+        match decoded {
             Ok(token_data) => return Ok(token_data.claims),
             Err(error) => {
                 // `decode_and_validate` already accepted the token shape and header, and this
@@ -1355,10 +1369,13 @@ mod tests {
         let (message, signature) = forged.rsplit_once('.').expect("the forgery must be a JWT");
         let published_key = jsonwebtoken::DecodingKey::from_jwk(&ec_key("ec-key"))
             .expect("the published EC JWK must decode");
+        let published_bytes = published_key
+            .try_get_as_bytes()
+            .expect("an EC decoding key holds its public point as bytes");
         assert_that!(jsonwebtoken::crypto::verify(
             signature,
             message.as_bytes(),
-            &published_key,
+            &jsonwebtoken::DecodingKey::from_secret(published_bytes),
             Algorithm::HS256,
         ))
         .ok()
