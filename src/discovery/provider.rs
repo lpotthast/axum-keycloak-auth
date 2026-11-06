@@ -25,7 +25,8 @@ pub(crate) fn default_discovery_op(
     instance_id: uuid::Uuid,
     kc_server: String,
     kc_realm: String,
-    retry: (usize, u64),
+    request_retries: usize,
+    request_retry_delay: Duration,
 ) -> DiscoveryOp {
     Arc::new(
         move |endpoint: OidcDiscoveryEndpoint, request: DiscoveryRequest| {
@@ -43,7 +44,7 @@ pub(crate) fn default_discovery_op(
                     discovery_attempt = request.attempt,
                     discovery_kind = ?request.kind,
                 );
-                perform_oidc_discovery(client, endpoint, retry.0, Duration::from_secs(retry.1))
+                perform_oidc_discovery(client, endpoint, request_retries, request_retry_delay)
                     .instrument(span)
                     .await
                     .map(Arc::new)

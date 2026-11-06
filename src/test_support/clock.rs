@@ -6,7 +6,9 @@ use std::{
 };
 
 use assertr::prelude::*;
+use futures::future::BoxFuture;
 use time::{Duration, OffsetDateTime};
+use tokio::sync::watch;
 
 use crate::clock::Clock;
 
@@ -20,6 +22,8 @@ use super::validation_time;
 #[derive(Debug, Clone)]
 pub(crate) struct ManualClock {
     state: Arc<Mutex<ManualClockState>>,
+    /// Publishes every monotonic time the clock moves to, waking sleepers.
+    monotonic_ticks: Arc<watch::Sender<Instant>>,
 }
 
 #[derive(Debug)]
@@ -31,11 +35,13 @@ struct ManualClockState {
 impl ManualClock {
     /// A clock showing `now`, with its monotonic time starting at the real current instant.
     pub(crate) fn new(now: OffsetDateTime) -> Self {
+        let monotonic = Instant::now();
         Self {
             state: Arc::new(Mutex::new(ManualClockState {
                 utc: now,
-                monotonic: Instant::now(),
+                monotonic,
             })),
+            monotonic_ticks: Arc::new(watch::Sender::new(monotonic)),
         }
     }
 
@@ -66,6 +72,7 @@ impl ManualClock {
             .monotonic
             .checked_add(forward)
             .expect("manual clock advance must not overflow Instant");
+        self.monotonic_ticks.send_replace(state.monotonic);
     }
 
     fn state(&self) -> MutexGuard<'_, ManualClockState> {
@@ -83,6 +90,17 @@ impl Clock for ManualClock {
     fn now_monotonic(&self) -> Instant {
         self.state().monotonic
     }
+
+    fn sleep_until(&self, deadline: Instant) -> BoxFuture<'static, ()> {
+        let mut ticks = self.monotonic_ticks.subscribe();
+        Box::pin(async move {
+            while *ticks.borrow_and_update() < deadline {
+                if ticks.changed().await.is_err() {
+                    return std::future::pending().await;
+                }
+            }
+        })
+    }
 }
 
 #[cfg(test)]
@@ -94,6 +112,28 @@ mod tests {
     use crate::{clock::Clock, test_support::validation_time};
 
     use super::ManualClock;
+
+    #[tokio::test]
+    async fn sleepers_wake_once_monotonic_time_reaches_their_deadline() {
+        let clock = ManualClock::new(validation_time());
+        let start = clock.now_monotonic();
+
+        // A deadline already reached completes immediately.
+        clock.sleep_until(start).await;
+
+        let mut sleep = clock.sleep_until(start + Duration::from_secs(10));
+        assert_that!(futures::poll!(&mut sleep).is_pending()).is_true();
+
+        // Moving only the wall clock does not wake sleepers.
+        clock.set(validation_time() + time::Duration::hours(1));
+        assert_that!(futures::poll!(&mut sleep).is_pending()).is_true();
+
+        clock.advance(time::Duration::milliseconds(9_999));
+        assert_that!(futures::poll!(&mut sleep).is_pending()).is_true();
+
+        clock.advance(time::Duration::milliseconds(1));
+        assert_that!(futures::poll!(&mut sleep).is_ready()).is_true();
+    }
 
     #[test]
     fn manual_clock_can_be_set_and_advanced() {

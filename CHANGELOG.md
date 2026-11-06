@@ -7,14 +7,48 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.9.0] - Unreleased
 
+### Security
+
+- **Breaking:** A background task owned by `KeycloakAuthInstance` now refreshes the decoding keys every four minutes by
+  default, independently of request traffic. Keys that could not be refreshed for longer than a maximum key age, five
+  minutes by default, expire, and expired keys are rejected one minute later. In 0.8.4, keys were never refreshed
+  periodically, so a key removed from Keycloak, for example because it was compromised, kept verifying tokens until a
+  token with an unknown `kid` triggered a refresh or the process restarted, and no such token arrives while all
+  legitimate tokens name a cached key. Such a key now stops verifying tokens at most six minutes after the last
+  successful refresh. Changed key material under an existing `kid` is picked up by the same refreshes. Key ages count
+  time the system spent suspended, and a discovery that does not finish within one minute, including its retries, is
+  abandoned and counts as failed, so that a Keycloak that stops answering cannot block later refreshes. While keys are
+  rejected, requests fail with the new `AuthError::DecodingKeysExpired`, answered with `503 Service Unavailable`, and
+  `KeycloakAuthInstance::is_operational` and `OperationalStatus::is_operational` report `false`, so a Keycloak outage
+  now takes instances out of rotation after two to six minutes, depending on how long before the outage their keys
+  were last refreshed. The new `ExpiredKeys` setting can instead keep using expired keys until a refresh succeeds, as
+  0.8.4 did, or reject them right away. Instances now request the discovery document and JWKS every four minutes,
+  also while idle.
+
 ### Added
 
+- Added `instance::DiscoveryConfig`, created with `DiscoveryConfig::builder()` and passed to the new
+  `KeycloakAuthInstanceBuilder::discovery_config` setting. It configures the request retries and retry delay of each
+  discovery, how long one discovery may take, the age at which keys are refreshed in the background, the maximum key
+  age, what happens with expired keys through the new `ExpiredKeys`, and how long requests wait for a shared refresh,
+  which was fixed at five seconds before. Requests no longer wait for a refresh that started longer ago than that. Its
+  `DEFAULT_*` constants and `ExpiredKeys::DEFAULT` document the defaults. Its builder's `build` returns the new
+  `DiscoveryConfigError` if the refresh age is not below the maximum key age, if the maximum key age is below
+  `DiscoveryConfig::MIN_MAX_KEY_AGE` (ten seconds), or if the discovery timeout is zero.
+- Added `AuthError::DiscoveryTimedOut`, which `KeycloakAuthInstance::wait_for_discovery` returns when the initial
+  discovery did not finish within the discovery timeout. `wait_for_discovery` therefore no longer waits longer than that
+  timeout, one minute by default, and returns the new `AuthError::DecodingKeysExpired` when the discovered keys are
+  rejected.
 - Re-exported `reqwest`, the HTTP client library whose `Client` `KeycloakAuthInstance::builder` requires.
 - Re-exported `jsonwebtoken`, the JWT library this crate verifies tokens with, so that an application installing a
   `jsonwebtoken::crypto::CryptoProvider` installs it into the same `jsonwebtoken` version this crate uses.
 
 ### Changed
 
+- **Breaking:** `AuthError::NoDecodingKeys`, returned while no discovery yielded usable keys yet, is now answered with
+  `503 Service Unavailable` and the body `{"error":"Authentication is temporarily unavailable."}`, without a
+  `WWW-Authenticate` challenge, instead of `401 Unauthorized` with the error's description, because the server cannot
+  verify any token, however valid it is. The new `AuthError::DecodingKeysExpired` gets the same response.
 - **Breaking:** `KeycloakAuthInstance::builder` no longer takes the `KeycloakConfig` as an argument and now requires the
   `reqwest::Client` used for OIDC discovery and key refreshes. Both are set through the builder, as in
   `KeycloakAuthInstance::builder().config(config).http_client(http_client).build()`, which does not compile until both
@@ -62,6 +96,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `AuthHeaderTokenExtractor` now matches the `Bearer` scheme case-insensitively, as RFC 7235 requires, and treats an
   `Authorization` header with another scheme, such as `Basic`, as an absent credential source instead of an unusable
   one. Such a header therefore neither fails authentication nor counts as a second credential source.
+- The `discovery_kind` field of the `perform_oidc_discovery` tracing span now names what caused a discovery: `Initial`,
+  `Scheduled` for the new background refreshes, or, for discoveries that requests caused, `Overdue`, `NoKeys`,
+  `UnknownKid`, or `KeysExpired`. 0.8.4 reported every discovery after the initial one as `OnDemand`.
 
 Dependency changes:
 
@@ -70,8 +107,17 @@ Dependency changes:
   backend is now rustls instead of native TLS, and its `rustls-tls` feature is now called `rustls`. Enable `reqwest`'s
   `native-tls` feature to keep native TLS.
 
+### Fixed
+
+- An instance whose initial discovery failed now becomes operational once Keycloak is reachable, without needing
+  requests. In 0.8.4, only requests retried the discovery, so behind the documented readiness check, which keeps traffic
+  away from an instance that is not operational, the instance never recovered.
+
 ### Removed
 
+- **Breaking:** Removed `KeycloakConfig::retry`. Configure retries with `DiscoveryConfigBuilder::request_retries` and
+  `DiscoveryConfigBuilder::request_retry_delay`, which takes a `Duration` instead of whole seconds. Previous defaults
+  are unchanged.
 - **Breaking:** Removed the `decode` module, deprecated since 0.8.4. Import its types from `token` instead, for example
   `axum_keycloak_auth::token::KeycloakToken`.
 - **Breaking:** Removed the `oidc_discovery` module. Import `RequestError` from `error` instead.

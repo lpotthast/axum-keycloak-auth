@@ -127,13 +127,32 @@ impl DiscoveredData {
 pub(crate) struct DecodingKeys {
     data: Option<Arc<DiscoveredData>>,
     generation: usize,
+    expired: bool,
 }
 
 impl DecodingKeys {
     /// Pairs a published snapshot with the generation it was published at. Constructed only by
     /// the discovery lifecycle (and by in-memory test doubles), so the two can never drift apart.
     pub(crate) fn new(data: Option<Arc<DiscoveredData>>, generation: usize) -> Self {
-        Self { data, generation }
+        Self {
+            data,
+            generation,
+            expired: false,
+        }
+    }
+
+    /// No usable keys, because the cached ones expired.
+    pub(crate) fn expired(generation: usize) -> Self {
+        Self {
+            data: None,
+            generation,
+            expired: true,
+        }
+    }
+
+    /// Whether keys are withheld because the cached ones expired.
+    pub(crate) fn is_expired(&self) -> bool {
+        self.expired
     }
 
     /// The discovery generation this key set was observed at.

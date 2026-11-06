@@ -92,6 +92,8 @@ where
         let header = raw_token.decode_header()?;
         log_unverified_jwt_header(self.unverified_jwt_header_logging, &header);
         self.policy.check_algorithm(header.alg)?;
+        // Backs up the background refresh. Never delays this request.
+        self.key_source.refresh_if_stale();
 
         // Signature verification (and the required-claim check for `exp`) stays with
         // jsonwebtoken. All claim-policy checks are enforced by this crate itself, in
@@ -118,14 +120,26 @@ where
             }
             Err(error) => error,
         };
-        let key_may_be_missing =
-            first.unknown_kid || matches!(first_error, AuthError::NoDecodingKeys);
-        if !key_may_be_missing {
-            return Err(first_error);
-        }
-
-        // The signing key may have rotated. Share one rate-limited refresh and retry once.
-        if !self.key_source.refresh_if_needed(first.generation).await {
+        let refreshed = match first_error {
+            // Expired keys only get a waiting refresh while the provider is healthy, so that an
+            // outage rejects requests without delay.
+            AuthError::DecodingKeysExpired => {
+                self.key_source.refresh_expired_keys(first.generation).await
+            }
+            // The signing key may have rotated. Share one rate-limited refresh and retry once.
+            AuthError::NoDecodingKeys => {
+                self.key_source
+                    .refresh_for_missing_keys(first.generation)
+                    .await
+            }
+            _ if first.unknown_kid => {
+                self.key_source
+                    .refresh_for_unknown_kid(first.generation)
+                    .await
+            }
+            _ => return Err(first_error),
+        };
+        if !refreshed {
             return Err(first_error);
         }
         let second = self.try_decode(&header, &validation, raw_token);
@@ -139,8 +153,10 @@ where
                 // so it is the authoritative reason the token is invalid. Otherwise retain the
                 // first candidate-key error, except when the first attempt had no keys from which
                 // to obtain one.
-                if matches!(&first_error, AuthError::NoDecodingKeys)
-                    || is_token_wide_rejection(&second_error)
+                if matches!(
+                    &first_error,
+                    AuthError::NoDecodingKeys | AuthError::DecodingKeysExpired
+                ) || is_token_wide_rejection(&second_error)
                 {
                     Err(second_error)
                 } else {
@@ -159,6 +175,14 @@ where
         let decoding_keys = self.key_source.decoding_keys();
         let validation_time = self.clock.now_utc();
         let generation = decoding_keys.generation();
+        if decoding_keys.is_expired() {
+            return DecodeAttempt {
+                result: Err(AuthError::DecodingKeysExpired),
+                unknown_kid: false,
+                generation,
+                validation_time,
+            };
+        }
 
         let (signature_result, unknown_kid) = match header.kid.as_deref() {
             Some(kid) => {
@@ -341,7 +365,7 @@ fn is_candidate_key_rejection(error: &jsonwebtoken::errors::Error) -> bool {
 /// currently available candidate keys.
 fn is_token_wide_rejection(error: &AuthError) -> bool {
     match error {
-        AuthError::NoDecodingKeys => false,
+        AuthError::NoDecodingKeys | AuthError::DecodingKeysExpired => false,
         AuthError::Decode { source } => !is_candidate_key_rejection(source),
         _ => true,
     }
@@ -366,15 +390,15 @@ mod tests {
 
     use crate::{
         clock::Clock,
-        discovery::{RefreshPolicy, RefreshStateSnapshot},
+        discovery::{DiscoveryConfig, ExpiredKeys, RefreshStateSnapshot},
         error::AuthError,
         instance::KeycloakAuthInstance,
         layer::UnverifiedJwtHeaderLogging,
         test_support::{
             CapturedLogs, Claims, EC_KEY_A, ManualClock, MockOidcServer, RSA_KEY_A, RSA_KEY_B,
             StaticKeySource, assert_logged_iff, claims_with, claims_without, config_for,
-            discovered_instance, instance_for, keycloak_claims, legacy_policy,
-            refresh_policy_without_jitter, signed_token, strict_policy, validation_time,
+            discovered_instance, discovery_config_without_jitter, instance_for, keycloak_claims,
+            legacy_policy, signed_token, strict_policy, validation_time,
             wait_for_discovery_completion, within_test_timeout,
         },
         token::{ProfileAndEmail, RawClaims, RawToken},
@@ -554,12 +578,12 @@ mod tests {
         provider.set_jwks(vec![key_b("key-b")]).await;
     }
 
-    async fn discovered_instance_with_refresh_policy(
+    async fn discovered_instance_with_discovery_config(
         provider: &MockOidcServer,
         clock: Arc<dyn Clock>,
-        policy: RefreshPolicy,
+        policy: DiscoveryConfig,
     ) -> Arc<KeycloakAuthInstance> {
-        let instance = Arc::new(KeycloakAuthInstance::new_with_refresh_policy(
+        let instance = Arc::new(KeycloakAuthInstance::new_with_discovery_config(
             &config_for(provider),
             uuid::Uuid::from_u128(1),
             clock,
@@ -587,6 +611,208 @@ mod tests {
 
         assert_that!(provider.discovery_requests()).is_equal_to(2);
         assert_that!(provider.jwks_requests()).is_equal_to(2);
+    }
+
+    #[tokio::test]
+    async fn background_refresh_stops_a_removed_key_with_a_cached_kid_from_verifying() {
+        let provider = provider_with_key_a().await;
+        let clock = ManualClock::at_validation_time();
+        let instance = discovered_instance_with_discovery_config(
+            &provider,
+            clock.clone(),
+            DiscoveryConfig {
+                background_refresh: true,
+                ..discovery_config_without_jitter()
+            },
+        )
+        .await;
+        let key_a_token = signed_token(&RSA_KEY_A, Some("key-a"));
+        // Keycloak removes key A, but tokens naming the cached `kid` trigger no refresh.
+        rotate_to_key_b(&provider).await;
+        decode_legacy(&instance, &key_a_token)
+            .await
+            .expect("cached key A must verify until the keys are refreshed");
+
+        clock.advance(time::Duration::minutes(4));
+        clock.set(validation_time());
+        wait_for_discovery_completion(&instance, 2).await;
+
+        assert_invalid_signature(&decode_legacy(&instance, &key_a_token).await);
+        assert_that!(provider.discovery_requests()).is_equal_to(2);
+        assert_that!(provider.jwks_requests()).is_equal_to(2);
+    }
+
+    #[tokio::test]
+    async fn rejected_expired_keys_fail_requests_until_a_refresh_succeeds() {
+        let provider = provider_with_key_a().await;
+        let clock = ManualClock::at_validation_time();
+        let instance = discovered_instance_with_discovery_config(
+            &provider,
+            clock.clone(),
+            DiscoveryConfig {
+                expired_keys: ExpiredKeys::Reject,
+                ..discovery_config_without_jitter()
+            },
+        )
+        .await;
+        let key_a_token = signed_token(&RSA_KEY_A, Some("key-a"));
+        provider.make_discovery_unavailable().await;
+
+        // The request finds the keys expired and waits for the refresh it starts, because the
+        // previous attempt succeeded. That refresh fails.
+        clock.advance(time::Duration::minutes(5));
+        clock.set(validation_time());
+        assert_that!(decode_legacy(&instance, &key_a_token).await)
+            .is_matching(pattern!(Err(AuthError::DecodingKeysExpired)));
+        assert_that!(instance.is_operational()).is_false();
+        assert_that!(instance.refresh_state_snapshot().consecutive_failures).is_equal_to(1);
+
+        // After the failure, requests are rejected without starting or awaiting a refresh.
+        let requests_before = provider.discovery_requests();
+        assert_that!(decode_legacy(&instance, &key_a_token).await)
+            .is_matching(pattern!(Err(AuthError::DecodingKeysExpired)));
+        assert_that!(instance.refresh_state_snapshot()).matches(partial!(RefreshStateSnapshot {
+            pending: IsFalse,
+            generation: eq(2),
+            ..
+        }));
+        assert_that!(provider.discovery_requests()).is_equal_to(requests_before);
+
+        // The first successful refresh makes the keys usable again.
+        provider.restore_discovery_response().await;
+        clock.advance(time::Duration::seconds(1));
+        clock.set(validation_time());
+        assert_that!(decode_legacy(&instance, &key_a_token).await)
+            .is_matching(pattern!(Err(AuthError::DecodingKeysExpired)));
+        wait_for_discovery_completion(&instance, 3).await;
+        decode_legacy(&instance, &key_a_token)
+            .await
+            .expect("refreshed keys must verify tokens again");
+        assert_that!(instance.is_operational()).is_true();
+    }
+
+    #[tokio::test]
+    async fn a_token_whose_key_is_gone_is_invalid_once_expired_keys_are_refreshed() {
+        let provider = provider_with_key_a().await;
+        let clock = ManualClock::at_validation_time();
+        let instance = discovered_instance_with_discovery_config(
+            &provider,
+            clock.clone(),
+            DiscoveryConfig {
+                expired_keys: ExpiredKeys::Reject,
+                ..discovery_config_without_jitter()
+            },
+        )
+        .await;
+        rotate_to_key_b(&provider).await;
+
+        // The keys expired without a failed refresh, so the request waits for one. The refreshed
+        // keys no longer contain key A, so the token is invalid, not the server unavailable.
+        clock.advance(time::Duration::minutes(5));
+        clock.set(validation_time());
+        assert_invalid_signature(
+            &decode_legacy(&instance, &signed_token(&RSA_KEY_A, Some("key-a"))).await,
+        );
+        assert_that!(instance.is_operational()).is_true();
+    }
+
+    #[tokio::test]
+    async fn a_request_arriving_with_the_scheduled_refresh_shares_it() {
+        let logs = CapturedLogs::default();
+        let _capture = logs.capture();
+        let provider = provider_with_key_a().await;
+        let clock = ManualClock::at_validation_time();
+        let instance = discovered_instance_with_discovery_config(
+            &provider,
+            clock.clone(),
+            DiscoveryConfig {
+                background_refresh: true,
+                expired_keys: ExpiredKeys::Reject,
+                ..discovery_config_without_jitter()
+            },
+        )
+        .await;
+        let key_a_token = signed_token(&RSA_KEY_A, Some("key-a"));
+
+        // The request finds the keys due before the background task wakes up.
+        clock.advance(time::Duration::minutes(4));
+        clock.set(validation_time());
+        decode_legacy(&instance, &key_a_token)
+            .await
+            .expect("keys due for a refresh must still verify tokens");
+        wait_for_discovery_completion(&instance, 2).await;
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+
+        assert_that!(provider.discovery_requests()).is_equal_to(2);
+        assert_that!(instance.refresh_state_snapshot().pending).is_false();
+        let contents = logs.contents();
+        let refreshes = contents.matches("discovery_kind=Scheduled").count()
+            + contents.matches("discovery_kind=Overdue").count();
+        assert_that!(refreshes).is_greater_than(0);
+        assert_that!(contents.matches("Starting OIDC discovery.").count()).is_equal_to(2);
+    }
+
+    #[tokio::test]
+    async fn each_refresh_trigger_is_recorded_as_its_discovery_kind() {
+        fn assert_kind_logged(logs: &CapturedLogs, kind: &str) {
+            assert_that!(logs.contents()).contains(format!("discovery_kind={kind}"));
+        }
+
+        let logs = CapturedLogs::default();
+        let _capture = logs.capture();
+
+        // Without the background task, every refresh after the initial one has a request cause.
+        let provider = provider_with_key_a().await;
+        let clock = ManualClock::at_validation_time();
+        let instance = discovered_instance_with_discovery_config(
+            &provider,
+            clock.clone(),
+            DiscoveryConfig {
+                expired_keys: ExpiredKeys::Reject,
+                ..discovery_config_without_jitter()
+            },
+        )
+        .await;
+        assert_kind_logged(&logs, "Initial");
+
+        rotate_to_key_b(&provider).await;
+        let key_b_token = signed_token(&RSA_KEY_B, Some("key-b"));
+        decode_legacy(&instance, &key_b_token)
+            .await
+            .expect("the unknown kid must refresh the keys");
+        assert_kind_logged(&logs, "UnknownKid");
+
+        clock.advance(time::Duration::minutes(4));
+        clock.set(validation_time());
+        decode_legacy(&instance, &key_b_token)
+            .await
+            .expect("keys due for a refresh must still verify tokens");
+        wait_for_discovery_completion(&instance, 3).await;
+        assert_kind_logged(&logs, "Overdue");
+
+        clock.advance(time::Duration::minutes(5));
+        clock.set(validation_time());
+        decode_legacy(&instance, &key_b_token)
+            .await
+            .expect("the refresh of the expired keys must make them usable again");
+        assert_kind_logged(&logs, "KeysExpired");
+
+        let failing_provider = MockOidcServer::start().await;
+        failing_provider.make_discovery_unavailable().await;
+        let failing_clock = ManualClock::at_validation_time();
+        let without_keys = Arc::new(KeycloakAuthInstance::new_with_discovery_config(
+            &config_for(&failing_provider),
+            uuid::Uuid::from_u128(2),
+            failing_clock.clone(),
+            discovery_config_without_jitter(),
+        ));
+        wait_for_discovery_completion(&without_keys, 1).await;
+        failing_clock.advance(time::Duration::seconds(1));
+        assert_that!(decode_legacy(&without_keys, &key_b_token).await)
+            .is_matching(pattern!(Err(AuthError::NoDecodingKeys)));
+        assert_kind_logged(&logs, "NoKeys");
     }
 
     #[tokio::test]
@@ -675,7 +901,7 @@ mod tests {
             pending: IsFalse,
             generation: eq(2),
         }));
-        // `retry((1, 0))` performs the initial failed request plus one retry.
+        // The test policy performs the initial failed request plus one retry.
         assert_that!(provider.discovery_requests()).is_equal_to(3);
         assert_that!(provider.jwks_requests()).is_equal_to(1);
     }
@@ -739,10 +965,10 @@ mod tests {
     async fn usable_refresh_recovers_after_an_empty_result() {
         let provider = provider_with_key_a().await;
         let clock = ManualClock::at_validation_time();
-        let instance = discovered_instance_with_refresh_policy(
+        let instance = discovered_instance_with_discovery_config(
             &provider,
             clock.clone(),
-            refresh_policy_without_jitter(),
+            discovery_config_without_jitter(),
         )
         .await;
         provider.set_jwks(Vec::new()).await;
@@ -774,11 +1000,11 @@ mod tests {
     async fn refreshes_after_initial_jwks_without_usable_keys_reaches_its_retry_deadline() {
         let provider = MockOidcServer::start().await;
         let clock = ManualClock::at_validation_time();
-        let instance = Arc::new(KeycloakAuthInstance::new_with_refresh_policy(
+        let instance = Arc::new(KeycloakAuthInstance::new_with_discovery_config(
             &config_for(&provider),
             uuid::Uuid::from_u128(1),
             clock.clone(),
-            refresh_policy_without_jitter(),
+            discovery_config_without_jitter(),
         ));
         wait_for_discovery_completion(&instance, 1).await;
         assert_that!(instance.is_operational()).is_false();
@@ -798,11 +1024,11 @@ mod tests {
     async fn empty_refresh_without_usable_cache_uses_failure_backoff() {
         let provider = MockOidcServer::start().await;
         let clock = ManualClock::at_validation_time();
-        let instance = Arc::new(KeycloakAuthInstance::new_with_refresh_policy(
+        let instance = Arc::new(KeycloakAuthInstance::new_with_discovery_config(
             &config_for(&provider),
             uuid::Uuid::from_u128(1),
             clock.clone(),
-            refresh_policy_without_jitter(),
+            discovery_config_without_jitter(),
         ));
         wait_for_discovery_completion(&instance, 1).await;
         let first_unknown = signed_token(&RSA_KEY_B, Some("key-b"));
@@ -834,7 +1060,7 @@ mod tests {
         let result = decode_legacy(&source, &signed_token(&RSA_KEY_B, Some("key-b"))).await;
 
         assert_invalid_signature(&result);
-        assert_that!(source.refresh_requests()).is_equal_to(1);
+        assert_that!(source.refresh_reasons()).is_equal_to(vec!["unknown_kid"]);
     }
 
     #[tokio::test]
@@ -852,7 +1078,7 @@ mod tests {
         let result = decode_legacy(&source, &token).await;
 
         assert_expired(&result);
-        assert_that!(source.refresh_requests()).is_equal_to(1);
+        assert_that!(source.refresh_reasons()).is_equal_to(vec!["unknown_kid"]);
     }
 
     #[tokio::test]
@@ -870,7 +1096,7 @@ mod tests {
         let result = decode_legacy(&source, &token).await;
 
         assert_invalid_audience(&result);
-        assert_that!(source.refresh_requests()).is_equal_to(1);
+        assert_that!(source.refresh_reasons()).is_equal_to(vec!["unknown_kid"]);
     }
 
     #[tokio::test]
@@ -888,7 +1114,7 @@ mod tests {
         let result = decode_legacy(&source, &token).await;
 
         assert_invalid_token(&result);
-        assert_that!(source.refresh_requests()).is_equal_to(1);
+        assert_that!(source.refresh_reasons()).is_equal_to(vec!["unknown_kid"]);
     }
 
     #[tokio::test]
@@ -900,10 +1126,10 @@ mod tests {
         let result = decode_legacy(&source, &signed_token(&RSA_KEY_B, Some("key-b"))).await;
 
         // The retry against the refreshed keys must report why the token is rejected;
-        // `NoDecodingKeys` would misrepresent an instance that has keys by now (and is planned
-        // to map to a 503 eventually, which a bad token must never earn).
+        // `NoDecodingKeys` would misrepresent an instance that has keys by now, and answer a bad
+        // token with a 503.
         assert_invalid_signature(&result);
-        assert_that!(source.refresh_requests()).is_equal_to(1);
+        assert_that!(source.refresh_reasons()).is_equal_to(vec!["missing_keys"]);
     }
 
     #[tokio::test]
@@ -1063,7 +1289,7 @@ mod tests {
             let result = decode_legacy(&source, &token).await;
 
             assert_invalid_signature(&result);
-            assert_that!(source.refresh_requests()).is_equal_to(1);
+            assert_that!(source.refresh_reasons()).is_equal_to(vec!["unknown_kid"]);
         }
     }
 
@@ -1109,7 +1335,7 @@ mod tests {
             .await
             .expect("the refreshed key set must verify the new family's token");
 
-        assert_that!(source.refresh_requests()).is_equal_to(1);
+        assert_that!(source.refresh_reasons()).is_equal_to(vec!["unknown_kid"]);
     }
 
     // ----- Policies ---------------------------------------------------------------------------

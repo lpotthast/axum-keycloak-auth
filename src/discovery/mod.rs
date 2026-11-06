@@ -1,12 +1,12 @@
 //! Internal OIDC discovery and JWKS cache.
 //!
 //! [`provider`] fetches the discovery document and JWKS. [`lifecycle`] coordinates refreshes and
-//! health state.
-//! [`policy`] calculates refresh delays. [`keys`] publishes generation-tagged key snapshots.
+//! health state. [`config`] holds the discovery configuration and calculates refresh delays.
+//! [`keys`] publishes generation-tagged key snapshots.
 
+mod config;
 mod keys;
 mod lifecycle;
-mod policy;
 mod provider;
 
 use std::{ops::Deref, sync::Arc};
@@ -16,10 +16,10 @@ use url::Url;
 
 use crate::{error::AuthError, server_url::ServerUrl};
 
+pub use config::{DiscoveryConfig, DiscoveryConfigBuilder, ExpiredKeys};
 pub(crate) use keys::{DecodingKeys, DiscoveredData};
 pub(crate) use lifecycle::Discovery;
 pub use lifecycle::{DiscoveryFailure, OperationalStatus};
-pub(crate) use policy::RefreshPolicy;
 pub(crate) use provider::default_discovery_op;
 
 #[cfg(test)]
@@ -42,10 +42,25 @@ impl Deref for OidcDiscoveryEndpoint {
     }
 }
 
+/// Why a discovery runs. Recorded as `discovery_kind` in the discovery's tracing span, so that
+/// operators can tell routine refreshes from refreshes that requests caused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DiscoveryKind {
+pub(crate) enum DiscoveryKind {
+    /// The first discovery, started when the instance is created.
     Initial,
-    OnDemand,
+    /// The background task refreshes keys that reached `refresh_after`, or retries a failed
+    /// discovery after its backoff.
+    Scheduled,
+    /// A request found the keys due for a refresh before the background task refreshed them, for
+    /// example because the task is disabled or fell behind.
+    Overdue,
+    /// A request found no keys, because no discovery succeeded yet.
+    NoKeys,
+    /// No cached key verified a token naming an unknown `kid`, so the signing key may have been
+    /// rotated. Anyone can send such tokens, which is why on-demand refreshes are rate-limited.
+    UnknownKid,
+    /// A request found the keys expired, because refreshing them failed or fell behind.
+    KeysExpired,
 }
 
 #[derive(Debug, Clone)]

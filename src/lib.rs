@@ -109,17 +109,34 @@
 //! [`KeycloakAuthInstance::builder`](instance::KeycloakAuthInstance::builder) creates an instance
 //! with your `reqwest::Client`, starts discovery in the background, and returns immediately.
 //!
-//! Validation may request an on-demand refresh when no usable keys are cached or when no cached
-//! key can verify a token with an unknown `kid`. Refreshes are shared and rate-limited, and the
-//! last usable key set remains available after a provider failure. There is no periodic refresh.
-//! A removed key remains trusted until another refresh replaces the set or the process restarts.
-//! Changed key material under an existing `kid` does not itself trigger a refresh, so publish
-//! rotated keys under a new `kid`.
+//! A background task owned by the instance refreshes the keys every four minutes by default,
+//! independently of request traffic, so requests do not wait for routine refreshes. It also keeps
+//! retrying a failed initial discovery. Validation additionally requests a shared, rate-limited
+//! refresh when no usable keys are cached or when no cached key can verify a token with an unknown
+//! `kid`.
+//!
+//! Keys expire once they are older than the maximum key age, five minutes by default, which only
+//! happens while refreshes fail, for example because Keycloak is unreachable. By default, expired
+//! keys are used for one more minute and then rejected, so that a key removed from Keycloak, for
+//! example because it was compromised, stops verifying tokens at most six minutes after the last
+//! successful refresh. While keys are rejected, requests fail with `503 Service Unavailable`, and
+//! the instance reports itself as not operational. [`ExpiredKeys`](instance::ExpiredKeys) also
+//! offers to keep using expired keys until Keycloak is reachable again, or to reject them right
+//! away. Key ages are measured on both the monotonic and the wall clock, so time the system spent
+//! suspended counts as well.
+//!
+//! One discovery, including its retries, is abandoned after one minute by default, so that a
+//! Keycloak that stops answering cannot block later refreshes. The background task belongs to the
+//! Tokio runtime that creates the instance, so create it on the runtime that serves requests.
+//!
+//! Configure these ages, the request retries, and how long requests wait for a refresh with a
+//! [`DiscoveryConfig`](instance::DiscoveryConfig), passed to
+//! [`KeycloakAuthInstanceBuilder::discovery_config`](instance::KeycloakAuthInstanceBuilder::discovery_config).
 //!
 //! # Readiness
 //!
-//! Requests fail with `401 Unauthorized` until the instance has discovered usable keys, for
-//! example while Keycloak is still starting. Report this through a readiness check, so that a
+//! Requests fail with `503 Service Unavailable` while the instance has no usable keys, for example
+//! while Keycloak is still starting. Report this through a readiness check, so that a
 //! scheduler such as Kubernetes only routes traffic to the application once it can authenticate
 //! requests:
 //!
@@ -144,8 +161,13 @@
 //!
 //! Keep the readiness route outside the authentication layer, and share the same
 //! `Arc<KeycloakAuthInstance>` with the layer. Once usable keys were discovered, the instance stays
-//! operational even if a later refresh fails, so a provider outage does not take a running
-//! application out of rotation.
+//! operational even if a later refresh fails, until [`ExpiredKeys`](instance::ExpiredKeys) rejects
+//! the expired keys. A Keycloak outage can therefore take every instance out of rotation within a
+//! few minutes. The instance becomes operational again with the first successful refresh.
+//!
+//! Use this for readiness checks, not liveness checks. Restarting the application does not make
+//! Keycloak reachable.
+//!
 //! [`OperationalStatus`](instance::OperationalStatus) also carries the latest discovery failure for
 //! health reporting.
 //!

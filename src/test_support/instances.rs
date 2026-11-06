@@ -10,7 +10,7 @@ use jsonwebtoken::{
 };
 
 use crate::{
-    discovery::{DiscoveredData, RefreshPolicy},
+    discovery::{DiscoveredData, DiscoveryConfig},
     instance::{KeycloakAuthInstance, KeycloakConfig, ServerUrl},
     oidc::OidcConfig,
 };
@@ -20,9 +20,6 @@ use super::{
     mock_provider::{MockOidcServer, discovery_document},
     test_server_url, within_test_timeout,
 };
-
-/// The fast test retry strategy: one retry, without delay.
-const TEST_RETRY: (usize, u64) = (1, 0);
 
 /// Discovery data for the fixture realm, trusting [`RSA_KEY_A`] under [`TEST_KID`].
 pub(crate) fn static_discovered_data() -> DiscoveredData {
@@ -67,18 +64,29 @@ pub(crate) fn offline_instance_at(server: ServerUrl, realm: &str) -> KeycloakAut
     let config = KeycloakConfig::builder()
         .server(server)
         .realm(realm.to_owned())
-        .retry(TEST_RETRY)
         .build();
     KeycloakAuthInstance::resolved(&config, data)
 }
 
-/// A configuration for `provider`'s realm, using the fast test retry strategy.
+/// A configuration for `provider`'s realm.
 pub(crate) fn config_for(provider: &MockOidcServer) -> KeycloakConfig {
     KeycloakConfig::builder()
         .server(provider.server_url())
         .realm(provider.realm().to_owned())
-        .retry(TEST_RETRY)
         .build()
+}
+
+/// The production discovery configuration with the fast test retry strategy (one retry, without
+/// delay) and without the background refresh task, so that tests control every refresh.
+pub(crate) fn test_discovery_config() -> DiscoveryConfig {
+    DiscoveryConfig {
+        background_refresh: false,
+        ..DiscoveryConfig::builder()
+            .request_retries(1)
+            .request_retry_delay(Duration::ZERO)
+            .build()
+            .expect("the test discovery configuration must build")
+    }
 }
 
 /// The HTTP client used to reach the [`MockOidcServer`], with a 10-second connect timeout and a
@@ -91,20 +99,21 @@ pub(crate) fn test_http_client() -> reqwest::Client {
         .expect("the test HTTP client must build")
 }
 
-/// An instance discovering against `provider` with [`config_for`] and [`test_http_client`]. It
-/// starts discovery and returns immediately.
+/// An instance discovering against `provider` with [`config_for`], [`test_http_client`], and
+/// [`test_discovery_config`]. It starts discovery and returns immediately.
 pub(crate) fn instance_for(provider: &MockOidcServer) -> KeycloakAuthInstance {
     KeycloakAuthInstance::builder()
         .config(config_for(provider))
         .http_client(test_http_client())
+        .discovery_config(test_discovery_config())
         .build()
 }
 
-/// The production refresh policy with jitter disabled, for tests asserting exact deadlines.
-pub(crate) fn refresh_policy_without_jitter() -> RefreshPolicy {
-    RefreshPolicy {
+/// [`test_discovery_config`] with jitter disabled, for tests asserting exact deadlines.
+pub(crate) fn discovery_config_without_jitter() -> DiscoveryConfig {
+    DiscoveryConfig {
         jitter_basis_points: 0,
-        ..RefreshPolicy::default()
+        ..test_discovery_config()
     }
 }
 

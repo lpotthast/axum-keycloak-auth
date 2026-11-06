@@ -7,13 +7,15 @@ use typed_builder::TypedBuilder;
 use crate::{
     clock::{Clock, SystemClock},
     discovery::{
-        DecodingKeys, Discovery, OidcDiscoveryEndpoint, RefreshPolicy, default_discovery_op,
+        DecodingKeys, Discovery, DiscoveryKind, OidcDiscoveryEndpoint, default_discovery_op,
     },
     error::AuthError,
     validation::KeySource,
 };
 
-pub use crate::discovery::{DiscoveryFailure, OperationalStatus};
+pub use crate::discovery::{
+    DiscoveryConfig, DiscoveryConfigBuilder, DiscoveryFailure, ExpiredKeys, OperationalStatus,
+};
 pub use crate::server_url::ServerUrl;
 
 /// Configuration used to derive a realm's OIDC discovery endpoint.
@@ -27,18 +29,6 @@ pub struct KeycloakConfig {
 
     /// Keycloak realm name.
     pub realm: String,
-
-    /// Retry count and fixed delay in seconds for OIDC discovery and JWKS requests.
-    ///
-    /// The first value is the number of retries after the initial attempt. The default `(5, 1)`
-    /// permits up to six attempts per endpoint with a one-second delay. Every failed request is
-    /// retried, including non-success HTTP responses.
-    ///
-    /// Retries apply to the initial discovery and to every on-demand refresh. Requests wait at most
-    /// five seconds for a shared refresh and then continue with the cached keys while the refresh
-    /// keeps retrying in the background. Lower these values if a refresh should give up sooner.
-    #[builder(default = (5, 1))]
-    pub retry: (usize, u64),
 }
 
 impl KeycloakConfig {
@@ -60,12 +50,19 @@ impl KeycloakConfig {
 
 /// Discovers and caches the OIDC discovery document and decoding keys for one Keycloak realm.
 ///
-/// Validation may request one shared on-demand refresh when no usable keys are cached or when no
-/// cached key verifies a token with an unknown `kid` (key ID). The last successful key set remains
-/// available when a refresh fails. Cooldown and backoff limit repeated provider requests.
+/// A background task refreshes the keys once they are
+/// [`refresh_after`](DiscoveryConfigBuilder::refresh_after) old, and retries failed discoveries,
+/// independently of request traffic. Validation may additionally request one shared refresh when
+/// no usable keys are cached or when no cached key verifies a token with an unknown `kid` (key ID).
+/// The last successful key set remains available when a refresh fails, until it expires and
+/// [`ExpiredKeys`] rejects it. Cooldown and backoff limit repeated Keycloak requests.
 ///
 /// Create one with [`Self::builder`], supplying your own `reqwest::Client`. Share one instance
-/// across layers that use the same realm. This avoids duplicate caches and provider requests.
+/// across layers that use the same realm. This avoids duplicate caches and Keycloak requests.
+/// Create it on the Tokio runtime that serves requests: the background task belongs to the
+/// runtime that creates the instance, and stops when that runtime shuts down. Discovery needs the
+/// runtime's time driver, enabled by `#[tokio::main]` or `Builder::enable_all`, and never succeeds
+/// without it.
 #[derive(Debug)]
 #[must_use = "dropping the last owner of an instance stops its discovery"]
 pub struct KeycloakAuthInstance {
@@ -93,7 +90,6 @@ impl KeycloakAuthInstance {
     ///     .connect_timeout(Duration::from_secs(10))
     ///     .timeout(Duration::from_secs(30))
     ///     .build()?;
-    ///
     /// let instance = KeycloakAuthInstance::builder()
     ///     .config(config)
     ///     .http_client(http_client)
@@ -110,7 +106,7 @@ impl KeycloakAuthInstance {
         client: reqwest::Client,
         id: uuid::Uuid,
         clock: Arc<dyn Clock>,
-        refresh_policy: RefreshPolicy,
+        discovery_config: DiscoveryConfig,
     ) -> Self {
         let endpoint = OidcDiscoveryEndpoint::new(&kc_config.server, &kc_config.realm);
         let op = default_discovery_op(
@@ -118,10 +114,11 @@ impl KeycloakAuthInstance {
             id,
             kc_config.server.to_string(),
             kc_config.realm.clone(),
-            kc_config.retry,
+            discovery_config.request_retries,
+            discovery_config.request_retry_delay,
         );
         Self {
-            discovery: Discovery::new(endpoint, op, id, clock, refresh_policy),
+            discovery: Discovery::new(endpoint, op, id, clock, discovery_config),
         }
     }
 
@@ -136,32 +133,34 @@ impl KeycloakAuthInstance {
     ///
     /// Once initial discovery has terminated, this returns immediately and reports the current
     /// state. A failed later refresh does not produce an error while previously discovered keys
-    /// remain usable.
+    /// remain usable. If initial discovery failed, the background task keeps retrying it.
     ///
-    /// This method adds no deadline of its own. Each endpoint is attempted up to `retry.0 + 1`
-    /// times (see [`KeycloakConfig::retry`]), so depending on the HTTP client's timeouts and the
-    /// retry settings, an unreachable provider can delay it for several minutes. Wrap it in
-    /// `tokio::time::timeout` when startup needs a hard deadline.
+    /// The initial discovery is abandoned after
+    /// [`discovery_timeout`](DiscoveryConfigBuilder::discovery_timeout), one minute by default, so
+    /// an unreachable provider delays this method at most that long. Wrap it in
+    /// `tokio::time::timeout` when startup needs a shorter deadline.
     ///
     /// # Errors
     ///
-    /// Returns the error of the failed discovery when no usable decoding keys are available.
+    /// Returns the error of the failed discovery when no usable decoding keys are available, such
+    /// as [`AuthError::DiscoveryTimedOut`], or [`AuthError::NoOidcDiscovery`] if the discovery
+    /// panicked or was cancelled. Returns [`AuthError::DecodingKeysExpired`] when the discovered
+    /// keys expired and are rejected.
     pub async fn wait_for_discovery(&self) -> Result<(), AuthError> {
         self.discovery.wait_for_completion(1).await;
-        if self.discovery.is_operational() {
-            Ok(())
-        } else {
-            Err(self
-                .discovery
-                .last_discovery_error()
-                .unwrap_or(AuthError::NoOidcDiscovery))
+        match self.discovery.unavailability() {
+            None => Ok(()),
+            Some(error) => Err(error),
         }
     }
 
-    /// Returns whether the instance currently has at least one usable decoding key.
+    /// Returns whether the instance currently has at least one usable decoding key that is not
+    /// rejected.
     ///
     /// A failed refresh does not make an instance non-operational while a previously discovered
-    /// key set remains usable.
+    /// key set remains usable. Keys that are older than
+    /// [`max_key_age`](DiscoveryConfigBuilder::max_key_age) because refreshes keep failing expire,
+    /// and [`ExpiredKeys`] decides when they are rejected, by default one minute later.
     ///
     /// This only reads in-memory state and never waits for a running discovery.
     #[must_use]
@@ -179,18 +178,18 @@ impl KeycloakAuthInstance {
     }
 
     #[cfg(test)]
-    pub(crate) fn new_with_refresh_policy(
+    pub(crate) fn new_with_discovery_config(
         kc_config: &KeycloakConfig,
         id: uuid::Uuid,
         clock: Arc<dyn Clock>,
-        refresh_policy: RefreshPolicy,
+        discovery_config: DiscoveryConfig,
     ) -> Self {
         Self::with_components(
             kc_config,
             crate::test_support::test_http_client(),
             id,
             clock,
-            refresh_policy,
+            discovery_config,
         )
     }
 
@@ -252,6 +251,17 @@ struct KeycloakAuthInstanceParts {
                             the [`reqwest`](crate::reqwest) version this crate re-exports."
     ))]
     http_client: reqwest::Client,
+
+    /// How discovery retries requests and refreshes keys.
+    #[builder(
+        default,
+        setter(
+            doc = "Sets how discovery retries provider requests, when it refreshes the \
+                      cached keys, and what happens with keys that could not be refreshed in \
+                      time. Defaults to [`DiscoveryConfig::default`]."
+        )
+    )]
+    discovery_config: DiscoveryConfig,
 }
 
 impl From<KeycloakAuthInstanceParts> for KeycloakAuthInstance {
@@ -261,7 +271,7 @@ impl From<KeycloakAuthInstanceParts> for KeycloakAuthInstance {
             parts.http_client,
             uuid::Uuid::now_v7(),
             Arc::new(SystemClock),
-            RefreshPolicy::default(),
+            parts.discovery_config,
         )
     }
 }
@@ -271,8 +281,26 @@ impl KeySource for KeycloakAuthInstance {
         self.discovery.decoding_keys()
     }
 
-    async fn refresh_if_needed(&self, observed_generation: usize) -> bool {
-        self.discovery.refresh_if_needed(observed_generation).await
+    async fn refresh_for_unknown_kid(&self, observed_generation: usize) -> bool {
+        self.discovery
+            .refresh_if_needed(observed_generation, DiscoveryKind::UnknownKid)
+            .await
+    }
+
+    async fn refresh_for_missing_keys(&self, observed_generation: usize) -> bool {
+        self.discovery
+            .refresh_if_needed(observed_generation, DiscoveryKind::NoKeys)
+            .await
+    }
+
+    async fn refresh_expired_keys(&self, observed_generation: usize) -> bool {
+        self.discovery
+            .refresh_expired_keys(observed_generation)
+            .await
+    }
+
+    fn refresh_if_stale(&self) {
+        self.discovery.refresh_if_stale();
     }
 }
 

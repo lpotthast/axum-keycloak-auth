@@ -39,8 +39,8 @@ pub(crate) use claims::{
 };
 pub(crate) use clock::ManualClock;
 pub(crate) use instances::{
-    config_for, discovered_data_at, discovered_instance, instance_for, offline_instance,
-    offline_instance_at, refresh_policy_without_jitter, static_discovered_data, test_http_client,
+    config_for, discovered_data_at, discovered_instance, discovery_config_without_jitter,
+    instance_for, offline_instance, offline_instance_at, static_discovered_data, test_http_client,
     wait_for_discovery_completion,
 };
 pub(crate) use key_source::StaticKeySource;

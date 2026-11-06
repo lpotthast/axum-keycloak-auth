@@ -12,18 +12,12 @@ Authenticate Axum requests with access tokens issued by Keycloak.
 
 - Axum and Tower middleware for bearer-token authentication.
 - Automatic OIDC discovery, with operational status for health reporting.
-- Shared, rate-limited key refresh. Cached keys remain usable during Keycloak provider outages.
+- Background key refresh, plus shared, rate-limited refreshes for rotated keys. Configurable handling of keys that
+  cannot be refreshed in time.
 - Configurable validation for issuers, audiences, algorithms, token types, claims, and authorized parties.
 - Blocking and passthrough modes for middleware-level or application-level error handling.
 - Typed token claims, raw claims, realm roles, client roles, and application-defined role and claims types.
 - Detailed programmatic errors, sanitized invalid-token responses, and opt-in diagnostic logging.
-
-## Key refresh
-
-Keys are refreshed on demand when no usable keys are cached or an unverifiable token names an unknown `kid`. There is
-no periodic refresh. Reusing an existing `kid` for new key material does not by itself trigger a refresh, so publish
-rotated keys under a new `kid`. Removed keys remain trusted until a refresh replaces the key set or the process
-restarts.
 
 ## Installation
 
@@ -171,8 +165,8 @@ pub async fn protected(Extension(token): Extension<KeycloakToken<String>>) -> St
 
 ### Readiness
 
-The instance discovers Keycloak's keys in the background, and requests fail with `401 Unauthorized` until it succeeds.
-Report this through a readiness check outside the authentication layer, so that schedulers such as Kubernetes only
+The instance discovers Keycloak's keys in the background, and requests fail with `503 Service Unavailable` until it
+succeeds. Report this through a readiness check outside the authentication layer, so that schedulers such as Kubernetes only
 route traffic to the application once it can authenticate requests:
 
 ```rust
@@ -194,8 +188,73 @@ pub fn readiness_router(instance: Arc<KeycloakAuthInstance>) -> Router {
 }
 ```
 
+The instance also stops being operational when its keys expired and are rejected, see [Key refresh](#key-refresh). A
+Keycloak outage can therefore take every instance out of rotation within a few minutes, including routes that need no
+authentication. If parts of the application must stay available without Keycloak, configure `ExpiredKeys::Trust` or a
+longer `ExpiredKeys::TrustFor`. Use this check for readiness, not liveness: restarting the application does not make
+Keycloak reachable.
+
 Applications that must not run at all without Keycloak can instead await `KeycloakAuthInstance::wait_for_discovery` at
 startup. This is an advanced option. Most applications should rely on the readiness check.
+
+### Key refresh
+
+A background task refreshes Keycloak's keys every four minutes by default, independently of request traffic, so that
+requests never wait for routine refreshes. It also keeps retrying a failed initial discovery. Tokens naming an unknown
+`kid` additionally trigger a shared, rate-limited refresh, so newly rotated keys are picked up right away. Changed key
+material under an existing `kid` is only picked up by the next refresh, at the latest the periodic one, so publish
+rotated keys under a new `kid`.
+
+Keys older than the maximum key age, five minutes by default, only occur while refreshes fail, for example because
+Keycloak is unreachable. What happens with them is configurable with `ExpiredKeys`:
+
+- `TrustFor(duration)`, the default with one minute: expired keys are used for that much longer, then rejected.
+  Keys therefore stop verifying tokens at most six minutes after the last successful refresh.
+- `Reject`: expired keys are rejected right away.
+- `Trust`: expired keys are used until a refresh succeeds. This keeps the application available during a Keycloak
+  outage of any length, but a key removed from Keycloak, for example because it was compromised, then keeps verifying
+  tokens for as long as the instance cannot reach Keycloak.
+
+While keys are rejected, requests fail with `503 Service Unavailable`, and the instance reports itself as not
+operational, which takes it out of rotation through the readiness check. The first successful refresh makes it
+operational again.
+
+Key ages are measured on both the monotonic and the wall clock, so time the system spent suspended counts as well. A
+single discovery, including its retries, is abandoned after one minute by default, so a Keycloak that stops answering
+cannot block later refreshes. Create the instance on the runtime that serves requests: its background task belongs to
+the runtime that created it.
+
+Configure these settings with a `DiscoveryConfig`:
+
+```rust
+use std::time::Duration;
+
+use axum_keycloak_auth::instance::{
+    DiscoveryConfig, ExpiredKeys, KeycloakAuthInstance, KeycloakConfig, ServerUrl,
+};
+
+pub fn keycloak_instance() -> Result<KeycloakAuthInstance, Box<dyn std::error::Error>> {
+    let config = KeycloakConfig::builder()
+        .server(ServerUrl::parse("https://keycloak.example/")?)
+        .realm(String::from("my-realm"))
+        .build();
+    let http_client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()?;
+    let discovery_config = DiscoveryConfig::builder()
+        .refresh_after(Duration::from_secs(240))
+        .max_key_age(Duration::from_secs(300))
+        .expired_keys(ExpiredKeys::Reject)
+        .build()?;
+    let instance = KeycloakAuthInstance::builder()
+        .config(config)
+        .http_client(http_client)
+        .discovery_config(discovery_config)
+        .build();
+    Ok(instance)
+}
+```
 
 ### Authentication logging
 

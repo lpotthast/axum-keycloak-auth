@@ -61,6 +61,38 @@ pub enum InvalidServerUrlError {
     },
 }
 
+/// Errors returned when a [`crate::instance::DiscoveryConfig`] is built from inconsistent
+/// settings.
+#[derive(Debug, Clone, PartialEq, Eq, Snafu)]
+#[non_exhaustive]
+pub enum DiscoveryConfigError {
+    /// The background task would not refresh keys before they expire.
+    #[snafu(display(
+        "The refresh age {refresh_after:?} is not below the maximum key age {max_key_age:?}, so keys would expire before they are refreshed."
+    ))]
+    RefreshAfterNotBelowMaxKeyAge {
+        /// The configured refresh age.
+        refresh_after: std::time::Duration,
+        /// The configured maximum key age.
+        max_key_age: std::time::Duration,
+    },
+
+    /// The maximum key age is too short for keys to be refreshed before they expire.
+    #[snafu(display(
+        "The maximum key age {max_key_age:?} is below the minimum of {minimum:?}, so keys could expire before they can be refreshed."
+    ))]
+    MaxKeyAgeTooShort {
+        /// The configured maximum key age.
+        max_key_age: std::time::Duration,
+        /// The shortest accepted maximum key age.
+        minimum: std::time::Duration,
+    },
+
+    /// The discovery timeout is zero, so every discovery would be abandoned immediately.
+    #[snafu(display("The discovery timeout is zero, so every discovery would fail."))]
+    ZeroDiscoveryTimeout,
+}
+
 /// Errors returned when a [`crate::validation::ValidationPolicy`] is built from inconsistent
 /// requirements.
 #[derive(Debug, Clone, PartialEq, Eq, Snafu)]
@@ -104,7 +136,9 @@ pub enum ValidationPolicyError {
 ///
 /// - `400 Bad Request` with the OAuth `invalid_request` code for credentials in more than one
 ///   source.
-/// - `401 Unauthorized` for token-extraction errors and unavailable decoding keys.
+/// - `401 Unauthorized` for token-extraction errors.
+/// - `503 Service Unavailable` while no decoding keys may be used, because discovery has not
+///   succeeded yet or the cached keys expired.
 /// - `401 Unauthorized` with the OAuth `invalid_token` code for JWT decoding and validation errors.
 /// - `403 Forbidden` for role failures.
 /// - `500 Internal Server Error` for OIDC or JWKS request, endpoint, and key-conversion failures.
@@ -120,6 +154,14 @@ pub enum AuthError {
     /// No OIDC discovery document is available.
     #[snafu(display("Never discovered an OIDC configuration."))]
     NoOidcDiscovery,
+
+    /// The OIDC discovery, including its retries, did not finish within the configured
+    /// [`discovery_timeout`](crate::instance::DiscoveryConfigBuilder::discovery_timeout).
+    #[snafu(display("The OIDC discovery did not finish within {timeout:?}."))]
+    DiscoveryTimedOut {
+        /// The configured discovery timeout.
+        timeout: std::time::Duration,
+    },
 
     /// The OIDC discovery request failed.
     #[snafu(display("Could not discover OIDC configuration."))]
@@ -172,9 +214,15 @@ pub enum AuthError {
         source: jsonwebtoken::errors::Error,
     },
 
-    /// No usable decoding keys are currently available.
+    /// No usable decoding keys are currently available, because no discovery has yielded usable
+    /// keys yet.
     #[snafu(display("There were no decoding keys available."))]
     NoDecodingKeys,
+
+    /// The cached decoding keys expired, because refreshing them failed, and
+    /// [`ExpiredKeys`](crate::instance::ExpiredKeys) rejects them.
+    #[snafu(display("The decoding keys expired because they could not be refreshed."))]
+    DecodingKeysExpired,
 
     /// The JWT could not be decoded.
     #[snafu(display("The JWT could not be decoded. Source: {source}"))]
@@ -237,15 +285,24 @@ impl IntoResponse for AuthError {
                     .into_response();
             }
             err @ (AuthError::NoOidcDiscovery
+            | AuthError::DiscoveryTimedOut { timeout: _ }
             | AuthError::OidcDiscovery { source: _ }
             | AuthError::JwkEndpoint { source: _ }
             | AuthError::JwkSetDiscovery { source: _ }) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Cow::Owned(err.to_string()),
             ),
-            err @ (AuthError::TokenExtraction { source: _ }
-            | AuthError::MissingToken
-            | AuthError::NoDecodingKeys) => {
+            AuthError::NoDecodingKeys | AuthError::DecodingKeysExpired => {
+                // The server cannot verify any token right now. The client's credentials may be
+                // fine, so neither `401 Unauthorized` nor a challenge applies. The body does not
+                // tell clients why, for example that the instance cannot reach Keycloak.
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({ "error": "Authentication is temporarily unavailable." })),
+                )
+                    .into_response();
+            }
+            err @ (AuthError::TokenExtraction { source: _ } | AuthError::MissingToken) => {
                 // RFC 6750 section 3: a request without usable credentials gets a challenge
                 // without an error code.
                 return (
@@ -334,10 +391,18 @@ mod tests {
                 AuthError::MissingToken,
                 r#"{"error":"No JWT could be extracted from the request."}"#,
             ),
-            missing_credentials(
-                AuthError::NoDecodingKeys,
-                r#"{"error":"There were no decoding keys available."}"#,
-            ),
+            DescriptiveResponseCase {
+                error: AuthError::NoDecodingKeys,
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                challenge: None,
+                body: r#"{"error":"Authentication is temporarily unavailable."}"#,
+            },
+            DescriptiveResponseCase {
+                error: AuthError::DecodingKeysExpired,
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                challenge: None,
+                body: r#"{"error":"Authentication is temporarily unavailable."}"#,
+            },
             DescriptiveResponseCase {
                 error: AuthError::MultipleCredentialSources,
                 status: StatusCode::BAD_REQUEST,
@@ -353,6 +418,12 @@ mod tests {
             internal_error(
                 AuthError::NoOidcDiscovery,
                 r#"{"error":"Never discovered an OIDC configuration."}"#,
+            ),
+            internal_error(
+                AuthError::DiscoveryTimedOut {
+                    timeout: std::time::Duration::from_secs(60),
+                },
+                r#"{"error":"The OIDC discovery did not finish within 60s."}"#,
             ),
             internal_error(
                 AuthError::OidcDiscovery {

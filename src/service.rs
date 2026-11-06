@@ -187,10 +187,13 @@ mod tests {
     use crate::{
         KeycloakAuthStatus, PassthroughMode,
         extract::{AuthHeaderTokenExtractor, QueryParamTokenExtractor, TokenExtractor},
+        instance::KeycloakAuthInstance,
+        layer::KeycloakAuthLayer,
         test_support::{
-            CapturedLogs, RSA_KEY_A, TEST_KID, anonymous_request, assert_logged_iff,
-            bearer_request, keycloak_claims, offline_layer, response_text, signed_token,
-            validation_time,
+            CapturedLogs, ManualClock, MockOidcServer, RSA_KEY_A, TEST_AUDIENCE, TEST_KID,
+            anonymous_request, assert_logged_iff, bearer_request, config_for,
+            discovery_config_without_jitter, keycloak_claims, offline_layer, response_text,
+            signed_token, validation_time, wait_for_discovery_completion,
         },
         token::{KeycloakToken, RawClaims},
     };
@@ -200,6 +203,52 @@ mod tests {
     /// An inner service accepting every request that reaches it.
     async fn no_content(_request: Request<Body>) -> Result<Response, Infallible> {
         Ok(StatusCode::NO_CONTENT.into_response())
+    }
+
+    #[tokio::test]
+    async fn keys_rejected_after_the_default_tolerance_answer_service_unavailable() {
+        let provider = MockOidcServer::start().await;
+        provider
+            .set_jwks(vec![RSA_KEY_A.jwk(Some(TEST_KID), Algorithm::RS256)])
+            .await;
+        let clock = ManualClock::at_validation_time();
+        let instance = Arc::new(KeycloakAuthInstance::new_with_discovery_config(
+            &config_for(&provider),
+            uuid::Uuid::from_u128(1),
+            clock.clone(),
+            discovery_config_without_jitter(),
+        ));
+        wait_for_discovery_completion(&instance, 1).await;
+        let layer = KeycloakAuthLayer::<String, Value>::builder()
+            .instance(instance.clone())
+            .expected_audiences(vec![String::from(TEST_AUDIENCE)])
+            .build()
+            .with_clock(clock.clone());
+        let mut service = KeycloakAuthService::new(tower::service_fn(no_content), &layer);
+        let token = signed_token(&RSA_KEY_A, Some(TEST_KID));
+        provider.make_discovery_unavailable().await;
+
+        // By default, keys stay usable for one minute past the five-minute maximum key age.
+        clock.advance(time::Duration::minutes(6) - time::Duration::milliseconds(1));
+        clock.set(validation_time());
+        let response = service
+            .call(bearer_request(&token))
+            .await
+            .expect("authentication middleware must not fail as a service");
+        assert_that!(response.status()).is_equal_to(StatusCode::NO_CONTENT);
+        wait_for_discovery_completion(&instance, 2).await;
+
+        clock.advance(time::Duration::milliseconds(1));
+        clock.set(validation_time());
+        let response = service
+            .call(bearer_request(&token))
+            .await
+            .expect("authentication middleware must not fail as a service");
+        assert_that!(response.status()).is_equal_to(StatusCode::SERVICE_UNAVAILABLE);
+        assert_that!(response.headers().get(WWW_AUTHENTICATE).is_none()).is_true();
+        assert_that!(response_text(response).await)
+            .is_equal_to(r#"{"error":"Authentication is temporarily unavailable."}"#);
+        assert_that!(instance.is_operational()).is_false();
     }
 
     #[tokio::test]

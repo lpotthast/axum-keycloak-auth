@@ -1,10 +1,7 @@
 //! An in-memory [`KeySource`], for testing the validation pipeline's key selection and refresh
 //! decisions without a provider or any I/O.
 
-use std::sync::{
-    Arc, Mutex, MutexGuard,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use jsonwebtoken::jwk::Jwk;
 
@@ -21,7 +18,8 @@ pub(crate) struct StaticKeySource {
     /// The published key set and its generation.
     published: Mutex<(Arc<DiscoveredData>, usize)>,
     next_keys: Mutex<Option<Vec<Jwk>>>,
-    refresh_requests: AtomicUsize,
+    /// Why the validator asked for each refresh, in order.
+    refresh_reasons: Mutex<Vec<&'static str>>,
 }
 
 impl StaticKeySource {
@@ -30,7 +28,7 @@ impl StaticKeySource {
         Arc::new(Self {
             published: Mutex::new((Arc::new(Self::data(keys)), 1)),
             next_keys: Mutex::new(None),
-            refresh_requests: AtomicUsize::new(0),
+            refresh_reasons: Mutex::new(Vec::new()),
         })
     }
 
@@ -42,7 +40,30 @@ impl StaticKeySource {
 
     /// How often the validator asked for a refresh.
     pub(crate) fn refresh_requests(&self) -> usize {
-        self.refresh_requests.load(Ordering::Relaxed)
+        lock(&self.refresh_reasons).len()
+    }
+
+    /// Why the validator asked for each refresh, in order: `"unknown_kid"`, `"missing_keys"`, or
+    /// `"expired_keys"`.
+    pub(crate) fn refresh_reasons(&self) -> Vec<&'static str> {
+        lock(&self.refresh_reasons).clone()
+    }
+
+    /// Publishes the key set given to [`Self::rotate_on_next_refresh`], whatever the reason for
+    /// the refresh, and reports whether a generation newer than the observed one exists.
+    fn refresh(&self, reason: &'static str, observed_generation: usize) -> bool {
+        lock(&self.refresh_reasons).push(reason);
+        let mut published = lock(&self.published);
+        if published.1 > observed_generation {
+            return true;
+        }
+        match lock(&self.next_keys).take() {
+            Some(keys) => {
+                *published = (Arc::new(Self::data(keys)), published.1 + 1);
+                true
+            }
+            None => false,
+        }
     }
 
     fn data(keys: Vec<Jwk>) -> DiscoveredData {
@@ -58,20 +79,24 @@ impl KeySource for StaticKeySource {
 
     // The trait fixes the async signature; this in-memory implementation completes immediately.
     #[allow(clippy::unused_async_trait_impl)]
-    async fn refresh_if_needed(&self, observed_generation: usize) -> bool {
-        self.refresh_requests.fetch_add(1, Ordering::Relaxed);
-        let mut published = lock(&self.published);
-        if published.1 > observed_generation {
-            return true;
-        }
-        match lock(&self.next_keys).take() {
-            Some(keys) => {
-                *published = (Arc::new(Self::data(keys)), published.1 + 1);
-                true
-            }
-            None => false,
-        }
+    async fn refresh_for_unknown_kid(&self, observed_generation: usize) -> bool {
+        self.refresh("unknown_kid", observed_generation)
     }
+
+    // The trait fixes the async signature; this in-memory implementation completes immediately.
+    #[allow(clippy::unused_async_trait_impl)]
+    async fn refresh_for_missing_keys(&self, observed_generation: usize) -> bool {
+        self.refresh("missing_keys", observed_generation)
+    }
+
+    // The trait fixes the async signature; this in-memory implementation completes immediately.
+    #[allow(clippy::unused_async_trait_impl)]
+    async fn refresh_expired_keys(&self, observed_generation: usize) -> bool {
+        self.refresh("expired_keys", observed_generation)
+    }
+
+    // This in-memory key set never ages.
+    fn refresh_if_stale(&self) {}
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
