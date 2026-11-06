@@ -86,6 +86,31 @@ to the key's own algorithm family.
 Install providers through the `axum_keycloak_auth::jsonwebtoken` re-export, or a direct dependency on the same
 `jsonwebtoken` major version, because a provider installed into another version has no effect on this crate.
 
+#### Not to be confused with rustls's `CryptoProvider`
+
+rustls has a `CryptoProvider` with an `install_default` function as well, and both can be backed by aws-lc-rs, but the
+two are unrelated. rustls's provider performs the cryptography of TLS connections, such as the HTTPS requests your
+`reqwest::Client` makes for OIDC discovery. `jsonwebtoken`'s provider verifies token signatures. Each crate keeps its
+own process-wide provider, and installing one never configures the other. The backend feature you choose for this crate
+therefore does not change `reqwest`'s TLS cryptography either.
+
+You may still need to install a rustls provider, independently of this crate. For example, `reqwest`'s
+`rustls-no-provider` feature requires one before the first `Client` is built, and rustls cannot choose a default
+provider by itself when more than one of its crypto backends is enabled. An application that needs both providers
+installs each one, for example at the start of `main`:
+
+```rust
+// TLS, for reqwest and other rustls users. Requires a direct `rustls` dependency.
+rustls::crypto::aws_lc_rs::default_provider()
+    .install_default()
+    .expect("no other rustls crypto provider must be installed yet");
+
+// Token signatures. Only needed in the cases described above.
+axum_keycloak_auth::jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER
+    .install_default()
+    .expect("no other jsonwebtoken crypto provider must be installed yet");
+```
+
 ## Usage
 
 `KeycloakAuthInstance` manages shared OIDC discovery and decoding keys. `KeycloakAuthLayer` extracts and validates a
