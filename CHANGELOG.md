@@ -106,6 +106,9 @@ Dependency changes:
   must now be built with `reqwest` 0.13, so update your application's own `reqwest` dependency too. Its default TLS
   backend is now rustls instead of native TLS, and its `rustls-tls` feature is now called `rustls`. Enable `reqwest`'s
   `native-tls` feature to keep native TLS.
+- **Breaking:** Updated `nonempty` from 0.11 to 0.12. The re-exported `NonEmpty`, which `KeycloakAuthLayer`'s
+  `token_extractors` takes, is now the 0.12 type. Build the extractors with `axum_keycloak_auth::NonEmpty` or with
+  `nonempty` 0.12.
 
 ### Fixed
 
