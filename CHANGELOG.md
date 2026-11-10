@@ -109,6 +109,9 @@ Dependency changes:
 - **Breaking:** Updated `nonempty` from 0.11 to 0.12. The re-exported `NonEmpty`, which `KeycloakAuthLayer`'s
   `token_extractors` takes, is now the 0.12 type. Build the extractors with `axum_keycloak_auth::NonEmpty` or with
   `nonempty` 0.12.
+- **Breaking:** Dependencies are now declared without their default features, enabling only the features this crate
+  uses. An application that, possibly unknowingly, relied on this crate to enable features of a shared dependency, most
+  likely `axum` (for example `http1` and `tokio` for `axum::serve`), must now enable them in its own dependencies.
 
 ### Fixed
 

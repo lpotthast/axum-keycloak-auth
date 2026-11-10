@@ -34,38 +34,40 @@ aws-lc-rs = ["jsonwebtoken/aws_lc_rs"]
 rust-crypto = ["jsonwebtoken/rust_crypto"]
 
 [dependencies]
-axum = "0.8.1"
-futures = "0.3.31"
-http = "1.2.0"
+axum = { version = "0.8.1", default-features = false, features = ["json"] }
+futures = { version = "0.3.31", default-features = false, features = ["std"] }
+http = { version = "1.2.0", default-features = false, features = ["std"] }
 jsonwebtoken = { version = "11.1.0", default-features = false }
-nonempty = { version = "0.12.0", features = ["std"] }
+nonempty = { version = "0.12.0", default-features = false, features = ["std"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
-serde = "1.0.228"
-serde-querystring = "0.3.0"
-serde_json = "1.0.134"
-serde_with = "3.12.0"
+serde = { version = "1.0.228", default-features = false, features = ["derive", "std"] }
+serde-querystring = { version = "0.3.0", default-features = false }
+serde_json = { version = "1.0.134", default-features = false, features = ["std"] }
+serde_with = { version = "3.12.0", default-features = false, features = ["macros", "std"] }
 snafu = { version = "0.9.2", default-features = false, features = ["std"] }
-time = "0.3.37"
-tokio = { version = "1.42.0", features = ["rt", "sync", "time"] }
-tower = "0.5.2"
-tracing = "0.1.41"
-try-again = "0.2.0"
+time = { version = "0.3.37", default-features = false, features = ["std"] }
+tokio = { version = "1.42.0", default-features = false, features = ["rt", "sync", "time"] }
+tower = { version = "0.5.2", default-features = false }
+tracing = { version = "0.1.41", default-features = false, features = ["attributes", "std"] }
+try-again = { version = "0.2.0", default-features = false, features = ["async-tokio"] }
 typed-builder = { version = "0.23.2", default-features = false }
-url = "2.5.4"
-uuid = { version = "1.11.0", features = ["v7"] }
+url = { version = "2.5.4", default-features = false, features = ["std"] }
+uuid = { version = "1.11.0", default-features = false, features = ["std", "v7"] }
 
 [dev-dependencies]
-assertr = { version = "0.9.1", features = ["http", "partial", "serde-json"] }
-axum = { version = "0.8.9", features = ["macros"] }
-base64 = "0.23.0"
-jsonwebtoken = { version = "11.1.0", features = ["use_pem"] }
-keycloak = "26.6.2"
-testcontainers = "0.28.0"
-tokio = { version = "1.42.0", features = ["macros", "net", "rt-multi-thread", "time"] }
-tower-http = { version = "0.7.0", features = ["trace"] }
-tracing-core = "0.1.36"
-tracing-subscriber = "0.3.23"
-uuid = { version = "1.24.1", features = ["v7", "serde"] }
+assertr = { version = "0.9.1", default-features = false, features = ["http", "partial", "serde-json", "std"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "macros", "tokio"] }
+base64 = { version = "0.23.0", default-features = false, features = ["std"] }
+futures = { version = "0.3.31", default-features = false, features = ["async-await", "executor", "std"] }
+jsonwebtoken = { version = "11.1.0", default-features = false, features = ["use_pem"] }
+keycloak = { version = "26.6.2", default-features = false, features = ["reqwest", "tag-realms-admin"] }
+testcontainers = { version = "0.28.0", default-features = false }
+tokio = { version = "1.42.0", default-features = false, features = ["macros", "net", "rt-multi-thread", "time"] }
+tower = { version = "0.5.2", default-features = false, features = ["util"] }
+tower-http = { version = "0.7.0", default-features = false, features = ["trace"] }
+tracing-core = { version = "0.1.36", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["ansi", "fmt", "std"] }
+uuid = { version = "1.24.1", default-features = false, features = ["serde", "std", "v7"] }
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
